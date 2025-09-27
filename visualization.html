@@ -34,11 +34,12 @@
             yMin = -0.300, yMax = 0.755,
             zMin = -0.06447185171756116
 
-      const baseLink = { baxter: 'base', panda: 'panda_link0' }
-      const endJoint = { baxter: 'left_gripper_base', panda: 'panda_hand_joint' }
+      const baseLink = { baxter: 'base', panda: 'panda_link0', unitree: 'torso_link' }
+      const endJoint = { baxter: 'left_gripper_base', panda: 'panda_hand_joint', unitree: 'left_base_joint' }
       const jointNames = {
         baxter: ['left_s0', 'left_s1', 'left_e0', 'left_e1', 'left_w0', 'left_w1', 'left_w2'],
-        panda: ['panda_joint1', 'panda_joint2', 'panda_joint3', 'panda_joint4', 'panda_joint5', 'panda_joint6', 'panda_joint7']
+        panda: ['panda_joint1', 'panda_joint2', 'panda_joint3', 'panda_joint4', 'panda_joint5', 'panda_joint6', 'panda_joint7'],
+        unitree: ['left_shoulder_pitch_joint', 'left_shoulder_roll_joint', 'left_shoulder_yaw_joint', 'left_elbow_joint', 'left_wrist_roll_joint', 'left_wrist_pitch_joint', 'left_wrist_yaw_joint']
       }
       const gripperAttributes = {
         baxter: {
@@ -48,6 +49,10 @@
         panda: {
           open: { panda_finger_joint1: 0.04, panda_finger_joint2: 0.04 },
           ee2object: { position: [0.01, 0, 0.066], orientation: [0, -Math.PI / 2, 0] }
+        },
+        unitree: {
+          open: { left_thumb_1_joint: 1.1641, left_index_1_joint: 1.4381 },
+          ee2object: { position: [0.01, 0, 0.066], orientation: [0, -Math.PI / 2, 0] }
         }
       }
 
@@ -55,7 +60,8 @@
 
       const initialJointConfig = {
         baxter: [1.0434904, -0.22012624, -0.747048, 1.5243934, 1.8818109, -0.9687088, -0.49087385],
-        panda: [1.19829, 0.328408, 1.0627, -2.05579, -1.32419, 0.958354, 0.0122619]
+        panda: [1.19829, 0.328408, 1.0627, -2.05579, -1.32419, 0.958354, 0.0122619],
+        unitree: [1.19829, 0.328408, 1.0627, -2.05579, -1.32419, 0.958354, 0.0122619]
       }
 
       const demonstration = { region_of_interest: 1.5 }
@@ -326,9 +332,22 @@
         urdfLoader.packages = {
           Panda : 'https://cdn.jsdelivr.net/gh/irsl-sbu/FrankaPanda/deps/Panda',
           baxter_description : 'https://cdn.jsdelivr.net/gh/irsl-sbu/baxter/baxter_description',
-          rethink_ee_description: 'https://cdn.jsdelivr.net/gh/irsl-sbu/baxter/rethink_ee_description'
+          rethink_ee_description: 'https://cdn.jsdelivr.net/gh/irsl-sbu/baxter/rethink_ee_description',
+          g1_description: 'https://raw.githubusercontent.com/irsl-sbu/unitree_ros/refs/heads/master/robots/g1_description'
         }
-        const urdfPath = urdfLoader.manager.resolveURL(robotName === 'panda' ? `${urdfLoader.packages.Panda}/panda.urdf` : `${urdfLoader.packages.baxter_description}/urdf/baxter_with_electric_gripper.urdf`)
+
+        let urdfPath
+        switch (robotName) {
+          case 'baxter':
+            urdfPath = urdfLoader.manager.resolveURL(`${urdfLoader.packages.baxter_description}/urdf/baxter_with_electric_gripper.urdf`) // baxter.urdf
+            break
+          case 'panda':
+            urdfPath = urdfLoader.manager.resolveURL(`${urdfLoader.packages.Panda}/panda.urdf`)
+            break
+          case 'unitree':
+            urdfPath = urdfLoader.manager.resolveURL(`${urdfLoader.packages.g1_description}/g1_29dof_rev_1_0_with_inspire_hand_FTP.urdf`) // g1_23dof.urdf, g1_29dof.urdf
+            break
+        }
         urdfLoader.manager.itemStart(urdfPath)
         fetch(urdfPath)
         .then(res => {
@@ -463,7 +482,7 @@
 
       parameters.robot = 'baxter'
       loadRobot(parameters.robot, parameters.showrobot)
-      gui.add(parameters, 'robot', ['baxter', 'panda']).name('Choose Robot').onChange(value => loadRobot(value, parameters.showrobot))
+      gui.add(parameters, 'robot', ['baxter', 'panda', 'unitree']).name('Choose Robot').onChange(value => loadRobot(value, parameters.showrobot))
 
       parameters.camera = 'head'
       gui.add(parameters, 'camera', ['top', 'head', 'front']).name('Reset Camera').onChange(value => {
