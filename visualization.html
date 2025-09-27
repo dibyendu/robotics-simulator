@@ -44,14 +44,17 @@
       const gripperAttributes = {
         baxter: {
           open: { l_gripper_l_finger_joint: 0.020833, l_gripper_r_finger_joint: -0.020833 },
+          close: { l_gripper_l_finger_joint: 0, l_gripper_r_finger_joint: 0 },
           ee2object: { position: [0.021, 0, 0.036], orientation: [0, -Math.PI / 2, 0] }
         },
         panda: {
           open: { panda_finger_joint1: 0.04, panda_finger_joint2: 0.04 },
+          close: { panda_finger_joint1: 0, panda_finger_joint2: 0 },
           ee2object: { position: [0.01, 0, 0.066], orientation: [0, -Math.PI / 2, 0] }
         },
         unitree: {
-          open: { left_thumb_1_joint: 1.1641, left_index_1_joint: 1.4381 },
+          open: { left_index_1_joint: 0, left_index_2_joint: 0, left_thumb_1_joint: 0, left_thumb_2_joint: 0, left_thumb_3_joint: 0, left_thumb_4_joint: 0 },
+          close: { left_index_1_joint: 1.4381, left_index_2_joint: 3.14, left_thumb_1_joint: 1.1641, left_thumb_2_joint: 0.5864, left_thumb_3_joint: 0.5, left_thumb_4_joint: 3.14 },
           ee2object: { position: [0.01, 0, 0.066], orientation: [0, -Math.PI / 2, 0] }
         }
       }
@@ -61,7 +64,7 @@
       const initialJointConfig = {
         baxter: [1.0434904, -0.22012624, -0.747048, 1.5243934, 1.8818109, -0.9687088, -0.49087385],
         panda: [1.19829, 0.328408, 1.0627, -2.05579, -1.32419, 0.958354, 0.0122619],
-        unitree: [1.19829, 0.328408, 1.0627, -2.05579, -1.32419, 0.958354, 0.0122619]
+        unitree: [0, 0, 0, 0, 0, 0, 0]
       }
 
       const demonstration = { region_of_interest: 1.5 }
@@ -330,22 +333,24 @@
       function loadRobot(robotName, show) {
         const urdfLoader = new URDFLoader(new THREE.LoadingManager())
         urdfLoader.packages = {
-          Panda : 'https://cdn.jsdelivr.net/gh/irsl-sbu/FrankaPanda/deps/Panda',
           baxter_description : 'https://cdn.jsdelivr.net/gh/irsl-sbu/baxter/baxter_description',
           rethink_ee_description: 'https://cdn.jsdelivr.net/gh/irsl-sbu/baxter/rethink_ee_description',
-          g1_description: 'https://raw.githubusercontent.com/irsl-sbu/unitree_ros/refs/heads/master/robots/g1_description'
+          Panda : 'https://cdn.jsdelivr.net/gh/irsl-sbu/FrankaPanda/deps/Panda',
+          g1_description: 'https://cdn.jsdelivr.net/gh/irsl-sbu/unitree_ros/robots/g1_description'
         }
 
         let urdfPath
         switch (robotName) {
           case 'baxter':
-            urdfPath = urdfLoader.manager.resolveURL(`${urdfLoader.packages.baxter_description}/urdf/baxter_with_electric_gripper.urdf`) // baxter.urdf
+            // baxter.urdf
+            urdfPath = urdfLoader.manager.resolveURL(`${urdfLoader.packages.baxter_description}/urdf/baxter_with_electric_gripper.urdf`)
             break
           case 'panda':
             urdfPath = urdfLoader.manager.resolveURL(`${urdfLoader.packages.Panda}/panda.urdf`)
             break
           case 'unitree':
-            urdfPath = urdfLoader.manager.resolveURL(`${urdfLoader.packages.g1_description}/g1_29dof_rev_1_0_with_inspire_hand_FTP.urdf`) // g1_23dof.urdf, g1_29dof.urdf
+            // g1_23dof.urdf, g1_29dof.urdf
+            urdfPath = urdfLoader.manager.resolveURL(`${urdfLoader.packages.g1_description}/g1_29dof_rev_1_0_with_inspire_hand_FTP.urdf`)
             break
         }
         urdfLoader.manager.itemStart(urdfPath)
@@ -546,12 +551,12 @@
 
 
         const openingSequenceLength = 10,
-              openingSequenceInterpolation = Object.entries(gripperAttributes[parameters.robot].open).map(([key, maxVal]) => Array.from({ length: openingSequenceLength }, (_, index) => ({ [key]: (index + 1) * Math.abs(maxVal) * (maxVal < 0 ? -1 : 1) }))),
-              openingSequence = [Object.assign({}, ...openingSequenceInterpolation.map(sequence => ({ [Object.keys(sequence[0])[0]]: 0 })))]
+              openingSequenceInterpolation = Object.assign(...Object.keys(gripperAttributes[parameters.robot].open).map(joint => ({ [joint]: (gripperAttributes[parameters.robot].open[joint] - gripperAttributes[parameters.robot].close[joint]) / openingSequenceLength }))),
+              openingSequence = [Object.assign({}, gripperAttributes[parameters.robot].close)]
         let i = 0
         while (i < openingSequenceLength) {
-          openingSequence.push(Object.assign({}, ...openingSequenceInterpolation.map(sequence => sequence[i])))
-          i += 1
+            openingSequence.push(Object.assign({}, ...Object.entries(openingSequence.at(-1)).map(([joint, val]) => ({ [joint]: val + openingSequenceInterpolation[joint] }))))
+            i += 1
         }
 
 
