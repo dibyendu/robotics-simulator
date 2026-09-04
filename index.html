@@ -1,1312 +1,1314 @@
 <!doctype html>
 <html lang='en'>
-
-<head>
-  <meta charset='UTF-8' />
-  <meta http-equiv='X-UA-Compatible' content='ie=edge' />
-  <meta name='viewport' content='width=device-width, initial-scale=1.0' />
-  <title>Motion Simulation and Visualization</title>
-  <link rel='preconnect' href='https://fonts.googleapis.com'>
-  <link rel='preconnect' href='https://fonts.gstatic.com' crossorigin>
-  <link href='https://fonts.googleapis.com/css2?family=Roboto:ital,wght@0,100..900;1,100..900&display=swap' rel='stylesheet'>
-  <style>
-    * {
-      margin: 0;
-      padding: 0;
-      font-family: 'Roboto', sans-serif
-    }
-
-    html,
-    body {
-      height: 100vh;
-      width: 100vw
-    }
-
-    #upload {
-      display: none
-    }
-  </style>
-</head>
-
-<body>
-  <div id='canvas'></div>
-  <input type='file' id='upload' directory webkitdirectory mozdirectory />
-  <script type='text/javascript'>
-
-    const SHOW_HELPER = false
-
-    const parameters = {
-      a: 0.06,
-      b: 0.03,
-      n: 6,
-      height: 0.10,
-      x: 0.72,
-      y: 0.44
-    }
-
-    const xMin = 0.7200, xMax = 1.1,
-          yMin = -0.300, yMax = 0.755,
-          zMin = -0.06447185171756116
-
-    const baseLink = { baxter: 'base', panda: 'panda_link0' }
-    const endJoint = { baxter: 'left_hand', panda: 'panda_hand_joint' }
-    const jointNames = {
-      baxter: ['left_s0', 'left_s1', 'left_e0', 'left_e1', 'left_w0', 'left_w1', 'left_w2'],
-      panda: ['panda_joint1', 'panda_joint2', 'panda_joint3', 'panda_joint4', 'panda_joint5', 'panda_joint6', 'panda_joint7']
-    }
-    const gripperAttributes = {
-      baxter: {
-        open: { l_gripper_l_finger_joint: 0.020833, l_gripper_r_finger_joint: -0.020833 },
-        close: { l_gripper_l_finger_joint: 0, l_gripper_r_finger_joint: 0 },
-        ee2object: { position: { demo: [0.006005, 0, -0.006291], task: [0.021, 0, 0.061] }, orientation: [0, -Math.PI / 2, 0] }
-      },
-      panda: {
-        open: { panda_finger_joint1: 0.04, panda_finger_joint2: 0.04 },
-        close: { panda_finger_joint1: 0, panda_finger_joint2: 0 },
-        ee2object: { position: { demo: [0.01, 0, 0.066], task: [0.01, 0, 0.066] }, orientation: [0, -Math.PI / 2, 0] }
-      }
-    }
-
-    const robotConfiguration = { gst0: null, joint_q: null, joint_axes: null, joint_limits: null }
-
-    const initialJointConfig = {
-      baxter: [1.0434904, -0.22012624, -0.747048, 1.5243934, 1.8818109, -0.9687088, -0.49087385],
-      panda: [1.19829, 0.328408, 1.0627, -2.05579, -1.32419, 0.958354, 0.0122619]
-    }
-
-    const demonstration = { region_of_interest: 1.5 }
-
-    const isCylinder = false,
-          destinationObjectRadius = 0.04,
-          destinationObjectHeight = 0.08,
-          objectFrameGuidingPoses = []
-  </script>
-  <script type='module'>
-    import WasmModule from 'https://dibyendu.github.io/research/planner.mjs'
-
-    document.getElementById('upload').addEventListener('change', function (event) {
-      for (let i = 0; i < this.files.length; i++) {
-        const key = this.files.item(i).name.slice(0, -4)
-        if (key[0] === '.')
-          continue
-        const reader = new FileReader()
-        reader.onload = async event => {
-          demonstration[key] = event.target.result
-          if (Object.keys(demonstration).length > 3) {
-            const Module = await WasmModule()
-            const guidingPoses = Module.getObjectFrameGuidingPoses(robotConfiguration, demonstration)
-            objectFrameGuidingPoses.push(...new Array(guidingPoses.size()).fill().map((_, i) => {
-              const _guidingPoses = guidingPoses.get(i)
-              return new Array(_guidingPoses.size()).fill().map((_, j) => {
-                const poses = _guidingPoses.get(j)
-                return new Array(poses.size()).fill().map((_, k) => poses.get(k))
-              })
-            }))
-          }
-        }
-        reader.readAsText(this.files.item(i))
-      }
-    }, false)
-  </script>
-  <script type='module'>
-    import nj from 'https://esm.run/numjs@0.16.0'
-
-    import URDFLoader from 'https://esm.run/urdf-loader@0.12.6'
-
-    import * as THREE from 'https://esm.run/three@0.182.0'
-    import { OBB } from 'https://esm.run/three@0.182.0/addons/math/OBB.js'
-    import Stats from 'https://esm.run/three@0.182.0/addons/libs/stats.module.js'
-    import { OBJLoader } from 'https://esm.run/three@0.182.0/addons/loaders/OBJLoader.js'
-    import { ViewHelper } from 'https://esm.run/three@0.182.0/addons/helpers/ViewHelper.js'
-    import { GUI } from 'https://esm.run/three@0.182.0/examples/jsm/libs/lil-gui.module.min.js'
-    import { MapControls } from 'https://esm.run/three@0.182.0/examples/jsm/controls/MapControls.js'
-    import { OrbitControls } from 'https://esm.run/three@0.182.0/examples/jsm/controls/OrbitControls.js'
-    import { ParametricGeometry } from 'https://esm.run/three@0.182.0/examples/jsm/geometries/ParametricGeometry.js'
-
-    import WasmModule from 'https://dibyendu.github.io/research/planner.mjs'
-
-
-
-
-    const materials = {
-      norm: new THREE.MeshNormalMaterial({ side: THREE.DoubleSide }),
-      shade: new THREE.MeshLambertMaterial({ color: 0x407cff, side: THREE.DoubleSide }),
-      wire: new THREE.MeshBasicMaterial({ color: 0xff0000, wireframe: true, vertexColors: true, side: THREE.DoubleSide }),
-      wood: new THREE.MeshBasicMaterial({ map: new THREE.TextureLoader().load('https://cdn.jsdelivr.net/gh/irsl-sbu/assets/texture.jpg'), side: THREE.DoubleSide }),
-      'uv-grid': new THREE.MeshBasicMaterial({ map: new THREE.TextureLoader().load('https://threejs.org/examples/textures/uv_grid_opengl.jpg'), side: THREE.DoubleSide })
-    }
-
-
-    const world2robot = new THREE.Matrix4(
-      1, 0, 0, -(xMin + xMax) / 2,
-      0, 1, 0, -(yMin + yMax) / 2,
-      0, 0, 1, -zMin,
-      0, 0, 0, 1
-    )
-
-
-
-
-
-
-    //////////////////////////
-    //   SHARED VARIABLES   //
-    //////////////////////////
-    let robot = null,
-        ee2c = null,
-        world2ee = null,
-        plannedEEPoses = [],
-        plannedJointAngles = [],
-        playBackIntervalId = null,
-        cFrameGuidingPoses = [],
-        demonstrationSourceWorld2C,
-        demonstrationPassiveObjectBase2C,
-        ee2gripper = { demo: null, task: null }
-
-
-    function forwardKinematics(jointConfig, robotName) {
-      const jnt_axis = nj.array(robotConfiguration.joint_axes.split('\n').map(row => row.split(',').map(cell => parseFloat(cell)))),
-        jnt_q = nj.array(robotConfiguration.joint_q.split('\n').map(row => row.split(',').map(cell => parseFloat(cell)))),
-        joint_limits = nj.array(robotConfiguration.joint_limits.split('\n').map(row => row.split(',').map(cell => parseFloat(cell)))),
-        gst0 = nj.array(robotConfiguration.gst0.split('\n').map(row => row.split(',').map(cell => parseFloat(cell))))
-
-      const manipulator = jointNames[robotName].map((name, index) => {
-        const _jnt_axis = nj.concatenate(jnt_axis.slice(null, [index, index + 1]).flatten(), [0]),
-          normalized = Math.sqrt(nj.sum(nj.power(_jnt_axis, new Array(_jnt_axis.shape[0]).fill(2))))
-        return {
-          joint_type: 'Revolute',
-          joint_name: name,
-          joint_axis: nj.divide(_jnt_axis, new Array(_jnt_axis.shape[0]).fill(normalized)),
-          joint_limits: joint_limits.slice([index, index + 1], null).flatten(),
-          joint_q: nj.concatenate(jnt_q.slice(null, [index, index + 1]).flatten(), [0])
-        }
-      })
-      let g_base_tool = nj.identity(4, 'float')
-      manipulator.forEach((joint, index) => {
-        const g = nj.identity(4, 'float')
-        if (joint.joint_type === 'Revolute') { // Determine exponential for revolute joint
-          const m3 = new THREE.Matrix3(),
-            m4 = new THREE.Matrix4(),
-            quaternion = new THREE.Quaternion()
-          quaternion.setFromAxisAngle(new THREE.Vector3(...joint.joint_axis.slice([3]).tolist()), jointConfig[index])
-          m4.makeRotationFromQuaternion(quaternion)
-          m3.setFromMatrix4(m4)
-          const rotation_matrix = nj.array(m3.transpose().toArray()).reshape(3, 3)
-          g.slice([3], [3]).assign(rotation_matrix, false)
-          g.slice([3], [3, 4]).assign(nj.dot(nj.identity(3, 'float').subtract(rotation_matrix), joint.joint_q.slice([3])).reshape([3, 1]), false)
-        } else if (joint.joint_type === 'Prismatic') { // Determine exponential for prismatic joint
-          const transl_axis = joint.joint_axis.slice([3])
-          g.slice([3], [3, 4]).assign(nj.array(new Array(transl_axis.shape[0]).fill(jointConfig[index])).multiply(transl_axis).reshape([3, 1]), false)
-        }
-        g_base_tool = nj.dot(g_base_tool, g)
-      })
-      return nj.dot(g_base_tool, gst0)
-    }
-
-
-    //////////////////
-    //   RENDERER   //
-    //////////////////
-    const renderer = new THREE.WebGLRenderer({ antialias: true })
-    renderer.setSize(window.innerWidth, window.innerHeight)
-    renderer.setPixelRatio(window.devicePixelRatio)
-    renderer.autoClear = false
-    document.getElementById('canvas').appendChild(renderer.domElement)
-
-
-    ///////////////
-    //   SCENE   //
-    ///////////////
-    const scene = new THREE.Scene()
-    scene.background = new THREE.Color(0xAAAAAA)
-
-
-    ////////////////
-    //   CAMERA   //
-    ////////////////
-    const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 2000)
-    scene.position.set(0.8, 0, -0.5)
-    scene.rotation.set(Math.PI, -Math.PI, 0)
-    camera.position.set(-0.47032294759910875, 0.0011589439523173595, 0.13735579030424844)
-    camera.rotation.set(-0.008437332335459433, -1.2866433657214633, -1.5707963267948961)
-    camera.up.set(1, 0, 0)
-
-
-    //////////////////
-    //   CONTROLS   //
-    //////////////////
-    const orbitControls = new OrbitControls(camera, renderer.domElement)
-
-
-    ///////////////
-    //   CLOCK   //
-    ///////////////
-    const clock = new THREE.Clock()
-
-
-    /////////////////////////
-    //   DIRECTION LIGHT   //
-    /////////////////////////
-    const directionLights = [
-      new THREE.DirectionalLight(0xffffff, 2),
-      new THREE.DirectionalLight(0xffffff, 2)
-    ]
-    directionLights[0].position.set(1, -1, 0)
-    directionLights[1].position.set(-1, -1, 0)
-    directionLights.forEach(light => scene.add(light))
-
-
-    /////////////////////
-    //   POINT LIGHT   //
-    /////////////////////
-    const pointLight = new THREE.PointLight(0xffffff, 5)
-    pointLight.position.set(0, 0, -1)
-    scene.add(pointLight)
-
-
-    ///////////////////////
-    //   AMBIENT LIGHT   //
-    ///////////////////////
-    const ambientLight = new THREE.AmbientLight(0x808080)
-    scene.add(ambientLight)
-
-
-    /////////////
-    //   FOG   //
-    /////////////
-    scene.fog = new THREE.FogExp2(0x888888, 0.0025)
-
-
-    /////////////////////
-    //   BASE FRAMES   //
-    /////////////////////
-    scene.add(new THREE.AxesHelper(0.04))
-    const { position: robotPosition, orientation: robotOrientation } = matrixToPositionEuler(world2robot)
-    scene.add(createFrame(robotPosition, robotOrientation))
-
-
-    /////////////////
-    //   SURFACE   //
-    /////////////////
-    const floor = new THREE.Mesh(new THREE.PlaneGeometry((xMax - xMin), (yMax - yMin)), materials.wood)
-    scene.add(floor)
-
-
-    /////////////////////
-    //   VIEW HELPER   //
-    /////////////////////
-    const helper = new ViewHelper(camera, renderer.domElement)
-    helper.setLabels('x', 'y', 'z')
-    helper.controls = orbitControls
-    helper.controls.center = orbitControls.target
-
-    const div = document.createElement('div')
-    div.id = 'viewHelper'
-    div.style.position = 'absolute'
-    div.style.bottom = div.style.right = 0
-    div.style.width = div.style.height = '128px'
-    document.getElementById('canvas').appendChild(div)
-
-    div.addEventListener('pointerup', event => helper.handleClick(event))
-
-
-    if (SHOW_HELPER) {
-      const dummyCamera = camera.clone()
-      dummyCamera.far /= 100
-      scene.add(dummyCamera)
-      scene.add(new THREE.CameraHelper(dummyCamera))
-
-      directionLights.forEach(light => scene.add(new THREE.DirectionalLightHelper(light, 0.1)))
-
-      scene.add(new THREE.PointLightHelper(pointLight, 0.1))
-
-      const grid = new THREE.GridHelper(
-        Math.max((xMax - xMin), (yMax - yMin)) * 1.1, 20,
-        0x222222, 0x777777
-      )
-      grid.rotateX(-Math.PI / 2)
-      scene.add(grid)
-    }
-
-
-    ///////////////
-    //   STATS   //
-    ///////////////
-    const stats = new Stats()
-    document.getElementById('canvas').appendChild(stats.dom)
-
-
-    ///////////////
-    //   ROBOT   //
-    ///////////////
-    function loadRobot(robotName, show) {
-      const urdfLoader = new URDFLoader(new THREE.LoadingManager())
-      urdfLoader.packages = {
-        baxter_description: 'https://cdn.jsdelivr.net/gh/irsl-sbu/baxter/baxter_description',
-        rethink_ee_description: 'https://cdn.jsdelivr.net/gh/irsl-sbu/baxter/rethink_ee_description',
-        Panda: 'https://cdn.jsdelivr.net/gh/irsl-sbu/FrankaPanda/deps/Panda'
+  <head>
+    <meta charset='UTF-8' />
+    <meta http-equiv='X-UA-Compatible' content='ie=edge' />
+    <meta name='viewport' content='width=device-width, initial-scale=1.0' />
+    <title>Motion Simulation and Visualization</title>
+    <link rel='preconnect' href='https://fonts.googleapis.com'>
+    <link rel='preconnect' href='https://fonts.gstatic.com' crossorigin>
+    <link href='https://fonts.googleapis.com/css2?family=Roboto:ital,wght@0,100..900;1,100..900&display=swap' rel='stylesheet'>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        font-family: 'Roboto', sans-serif
       }
 
-      let urdfPath
-      switch (robotName) {
-        case 'baxter':
-          // baxter_with_electric_gripper.urdf    or    baxter.urdf
-          urdfPath = urdfLoader.manager.resolveURL(`${urdfLoader.packages.baxter_description}/urdf/baxter_with_electric_gripper.urdf`)
-          break
-        case 'panda':
-          urdfPath = urdfLoader.manager.resolveURL(`${urdfLoader.packages.Panda}/panda.urdf`)
+      html,
+      body {
+        height: 100vh;
+        width: 100vw
       }
-      urdfLoader.manager.itemStart(urdfPath)
-      fetch(urdfPath)
-      .then(res => {
-        if (res.ok) return res.text()
-        else console.error(`Failed to load urdf '${urdfPath}' with error code ${res.status} : ${res.statusText}`)
-      })
-      .then(data => {
-        if (robot) {
-          robot.removeFromParent()
-          robot.geometry?.dispose()
-          robot.material?.dispose()
-        }
-        robot = urdfLoader.parse(data)
-        urdfLoader.manager.itemEnd(urdfPath)
-        robot.setJointValues(gripperAttributes[robotName].open)
-        robot.applyMatrix4(world2robot)
-        if (show)
-          scene.add(robot)
-        else
-          robot.removeFromParent()
-        console.log('Robot loaded')
 
-        const urdf = new DOMParser().parseFromString(data, 'application/xml')
-        if (urdf.querySelector('parsererror'))
-          console.error('Error while parsing URDF')
-        else {
-          function getJointValues(joint) {
-            const fields = { joint: { name: null, type: null }, parent: { link: null }, child: { link: null }, origin: { rpy: null, xyz: null }, axis: { xyz: null }, limit: { lower: null, upper: null } }
-            fields.joint.name = joint.getAttribute('name')
-            fields.joint.type = joint.getAttribute('type')
-            joint.childNodes.forEach(node => {
-              if (node.tagName in fields) {
-                Object.keys(fields[node.tagName]).forEach(value => {
-                  fields[node.tagName][value] = node.getAttribute(value)
+      #upload {
+        display: none
+      }
+    </style>
+    <script type='importmap'>
+      {
+        "imports": {
+          "numjs": "https://esm.run/numjs@0.16.0",
+          "three": "https://esm.run/three@0.182.0",
+          "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.182.0/examples/jsm/",
+          "three/examples/jsm/": "https://cdn.jsdelivr.net/npm/three@0.182.0/examples/jsm/",
+          "urdf-loader": "https://cdn.jsdelivr.net/npm/urdf-loader@0.12.6/src/URDFLoader.js"
+        }
+      }
+    </script>
+  </head>
+
+  <body>
+    <div id='canvas'></div>
+    <input type='file' id='upload' directory webkitdirectory mozdirectory />
+    <script type='text/javascript'>
+
+      const SHOW_HELPER = false
+
+      const parameters = {
+        a: 0.06,
+        b: 0.03,
+        n: 6,
+        height: 0.10,
+        x: 0.72,
+        y: 0.44
+      }
+
+      const xMin = 0.7200, xMax = 1.1,
+            yMin = -0.300, yMax = 0.755,
+            zMin = -0.06447185171756116
+
+      const baseLink = { baxter: 'base', panda: 'panda_link0' }
+      const endJoint = { baxter: 'left_hand', panda: 'panda_hand_joint' }
+      const jointNames = {
+        baxter: ['left_s0', 'left_s1', 'left_e0', 'left_e1', 'left_w0', 'left_w1', 'left_w2'],
+        panda: ['panda_joint1', 'panda_joint2', 'panda_joint3', 'panda_joint4', 'panda_joint5', 'panda_joint6', 'panda_joint7']
+      }
+      const gripperAttributes = {
+        baxter: {
+          open: { l_gripper_l_finger_joint: 0.020833, l_gripper_r_finger_joint: -0.020833 },
+          close: { l_gripper_l_finger_joint: 0, l_gripper_r_finger_joint: 0 },
+          ee2object: { position: { demo: [0.006005, 0, -0.006291], task: [0.021, 0, 0.061] }, orientation: [0, -Math.PI / 2, 0] }
+        },
+        panda: {
+          open: { panda_finger_joint1: 0.04, panda_finger_joint2: 0.04 },
+          close: { panda_finger_joint1: 0, panda_finger_joint2: 0 },
+          ee2object: { position: { demo: [0.01, 0, 0.066], task: [0.01, 0, 0.066] }, orientation: [0, -Math.PI / 2, 0] }
+        }
+      }
+
+      const robotConfiguration = { gst0: null, joint_q: null, joint_axes: null, joint_limits: null }
+
+      const initialJointConfig = {
+        baxter: [1.0434904, -0.22012624, -0.747048, 1.5243934, 1.8818109, -0.9687088, -0.49087385],
+        panda: [1.19829, 0.328408, 1.0627, -2.05579, -1.32419, 0.958354, 0.0122619]
+      }
+
+      const demonstration = { region_of_interest: 1.5 }
+
+      const isCylinder = false,
+            destinationObjectRadius = 0.04,
+            destinationObjectHeight = 0.08,
+            objectFrameGuidingPoses = []
+    </script>
+    <script type='module'>
+      import WasmModule from 'https://dibyendu.github.io/research/planner.mjs'
+
+      document.getElementById('upload').addEventListener('change', function (event) {
+        for (let i = 0; i < this.files.length; i++) {
+          const key = this.files.item(i).name.slice(0, -4)
+          if (key[0] === '.')
+            continue
+          const reader = new FileReader()
+          reader.onload = async event => {
+            demonstration[key] = event.target.result
+            if (Object.keys(demonstration).length > 3) {
+              const Module = await WasmModule()
+              const guidingPoses = Module.getObjectFrameGuidingPoses(robotConfiguration, demonstration)
+              objectFrameGuidingPoses.push(...new Array(guidingPoses.size()).fill().map((_, i) => {
+                const _guidingPoses = guidingPoses.get(i)
+                return new Array(_guidingPoses.size()).fill().map((_, j) => {
+                  const poses = _guidingPoses.get(j)
+                  return new Array(poses.size()).fill().map((_, k) => poses.get(k))
                 })
-              }
-            })
-            return fields
-          }
-
-          const linkMap = {}
-          Array.from(urdf.getElementsByTagName('joint')).forEach(joint => {
-            const fields = getJointValues(joint)
-            if (!(fields.child.link in linkMap))
-              linkMap[fields.child.link] = []
-            linkMap[fields.child.link].push(fields)
-          })
-
-          const path = [getJointValues(urdf.querySelector(`joint[name="${endJoint[robotName]}"]`))]
-          while (path.at(-1).parent.link !== baseLink[robotName])
-            path.push(linkMap[path.at(-1).parent.link][0])
-
-          const matrix = new THREE.Matrix4().identity()
-          const manipulatorConfig = {}
-          for (const joint of path.reverse()) {
-            const rpy = joint.origin.rpy.split(' ').map(val => parseFloat(val)),
-              xyz = joint.origin.xyz.split(' ').map(val => parseFloat(val)),
-              rotX = new THREE.Matrix4().makeRotationX(rpy[0]),
-              rotY = new THREE.Matrix4().makeRotationY(rpy[1]),
-              rotZ = new THREE.Matrix4().makeRotationZ(rpy[2]),
-              rotation = new THREE.Matrix3().setFromMatrix4(matrix.multiply(rotZ.multiply(rotY).multiply(rotX).setPosition(...xyz)))
-            if (joint.axis.xyz) {
-              const axis = new THREE.Vector3(...joint.axis.xyz.split(' ').map(val => parseFloat(val))).applyMatrix3(rotation)
-              manipulatorConfig[joint.joint.name] = {
-                axis: [axis.x, axis.y, axis.z],
-                q: matrix.toArray().slice(12).slice(0, 3),
-                limits: { lower: parseFloat(joint.limit.lower), upper: parseFloat(joint.limit.upper) }
-              }
+              }))
             }
           }
-
-          ee2gripper.demo = positionEulerToMatrix(gripperAttributes[robotName].ee2object.position.demo, gripperAttributes[robotName].ee2object.orientation)
-          ee2gripper.task = positionEulerToMatrix(gripperAttributes[robotName].ee2object.position.task, gripperAttributes[robotName].ee2object.orientation)
-
-          robotConfiguration.gst0 = nj.array(matrix.transpose().toArray()).reshape(4, 4).tolist().map(row => row.map(n => `${n.toFixed(16)}`).join(',')).join('\n')
-          robotConfiguration.joint_axes = nj.array(jointNames[robotName].map(name => manipulatorConfig[name].axis)).T.tolist().map(row => row.map(n => `${n.toFixed(16)}`).join(',')).join('\n')
-          robotConfiguration.joint_q = nj.array(jointNames[robotName].map(name => manipulatorConfig[name].q)).T.tolist().map(row => row.map(n => `${n.toFixed(16)}`).join(',')).join('\n')
-          robotConfiguration.joint_limits = nj.array(jointNames[robotName].map(name => [manipulatorConfig[name].limits.lower, manipulatorConfig[name].limits.upper])).tolist().map(row => row.map(n => `${n.toFixed(16)}`).join(',')).join('\n')
+          reader.readAsText(this.files.item(i))
         }
-      })
-      .catch(e => {
-        console.error('Error loading URDF file: ', e)
-        urdfLoader.manager.itemError(urdfPath)
-        urdfLoader.manager.itemEnd(urdfPath)
-      })
-    }
+      }, false)
+    </script>
+    <script type='module'>
+      import nj from 'numjs'
+
+      import URDFLoader from 'urdf-loader'
+
+      import * as THREE from 'three'
+      import { OBB } from 'three/addons/math/OBB.js'
+      import Stats from 'three/addons/libs/stats.module.js'
+      import { OBJLoader } from 'three/addons/loaders/OBJLoader.js'
+      import { ViewHelper } from 'three/addons/helpers/ViewHelper.js'
+      import { GUI } from 'three/examples/jsm/libs/lil-gui.module.min.js'
+      import { MapControls } from 'three/examples/jsm/controls/MapControls.js'
+      import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
+      import { ParametricGeometry } from 'three/examples/jsm/geometries/ParametricGeometry.js'
+
+      import WasmModule from 'https://dibyendu.github.io/research/planner.mjs'
 
 
-    /////////////
-    //   GUI   //
-    /////////////
-    const gui = new GUI({ title: 'Motion Transfer across Geometries' })
 
-    let props = gui.addFolder('Primary Object: Super-Elliptical Cylinder')
 
-    props.add(parameters, 'a', 0.01, 0.1).name('a').step(0.005).onChange(value => {
-      updatePrimaryObject({ ...parameters, a: value })
-      updatePassiveObject({ radius: destinationObjectRadius, height: destinationObjectHeight, position: { x: parameters.x, y: parameters.y, z: zMin }, isCylinder })
-    })
-    props.add(parameters, 'b', 0.01, 0.1).name('b').step(0.005).onChange(value => {
-      updatePrimaryObject({ ...parameters, b: value })
-      updatePassiveObject({ radius: destinationObjectRadius, height: destinationObjectHeight, position: { x: parameters.x, y: parameters.y, z: zMin }, isCylinder })
-    })
-    props.add(parameters, 'n', 0.5, 10).name('n').step(0.1).onChange(value => {
-      updatePrimaryObject({ ...parameters, n: value })
-      updatePassiveObject({ radius: destinationObjectRadius, height: destinationObjectHeight, position: { x: parameters.x, y: parameters.y, z: zMin }, isCylinder })
-    })
-    props.add(parameters, 'height', 0.01, 0.2).name('Height').step(0.01).onChange(value => updatePrimaryObject({ ...parameters, height: value }))
-
-    props = gui.addFolder('Passive Object: Location')
-
-    props.add(parameters, 'x', xMin, xMax).name('x').step(0.01).onChange(value => {
-      updatePrimaryObject({ ...parameters })
-      updatePassiveObject({ radius: destinationObjectRadius, height: destinationObjectHeight, position: { x: parameters.x, y: parameters.y, z: zMin }, isCylinder })
-    })
-    props.add(parameters, 'y', yMin, yMax).name('y').step(0.01).onChange(value => {
-      updatePrimaryObject({ ...parameters })
-      updatePassiveObject({ radius: destinationObjectRadius, height: destinationObjectHeight, position: { x: parameters.x, y: parameters.y, z: zMin }, isCylinder })
-    })
-
-    props = gui.addFolder('Shader Parameters')
-
-    parameters.segments = 100
-    props.add(parameters, 'segments', 10, 100).step(1).name('Sub Divisions').onChange(value => updatePrimaryObject({ ...parameters }))
-
-    parameters.material = 'shade'
-    props.add(parameters, 'material', ['norm', 'shade', 'wire', 'uv-grid', 'wood']).name('Material').onChange(value => updatePrimaryObject({ ...parameters }))
-
-    props.close()
-
-    parameters.showrobot = true
-    gui.add(parameters, 'showrobot').name('Show Robot').onChange(value => value ? scene.add(robot) : robot.removeFromParent())
-
-    parameters.robot = 'baxter'
-    loadRobot(parameters.robot, parameters.showrobot)
-    gui.add(parameters, 'robot', ['baxter', 'panda']).name('Choose Robot').onChange(value => loadRobot(value, parameters.showrobot))
-
-    parameters.camera = 'front'
-    gui.add(parameters, 'camera', ['top', 'head', 'front']).name('Reset Camera').onChange(value => {
-      orbitControls.reset()
-      scene.position.set(0, 0, 0)
-      scene.rotation.set(0, 0, 0)
-      switch (value) {
-        case 'top':
-          camera.position.set(0, 0, 0.65)
-          break
-        case 'front':
-          scene.position.set(0.8, 0, -0.5)
-          scene.rotation.set(Math.PI, -Math.PI, 0)
-          camera.position.set(-0.47032294759910875, 0.0011589439523173595, 0.13735579030424844)
-          camera.rotation.set(-0.008437332335459433, -1.2866433657214633, -1.5707963267948961)
-          break
-        case 'head':
-          camera.position.set(-0.43738477943382703, -0.0016711043884659604, 0.4435157392168402)
-          camera.rotation.set(-0.003767840310239346, -0.7784348493584072, -1.5707963267948961)
+      const materials = {
+        norm: new THREE.MeshNormalMaterial({ side: THREE.DoubleSide }),
+        shade: new THREE.MeshLambertMaterial({ color: 0x407cff, side: THREE.DoubleSide }),
+        wire: new THREE.MeshBasicMaterial({ color: 0xff0000, wireframe: true, vertexColors: true, side: THREE.DoubleSide }),
+        wood: new THREE.MeshBasicMaterial({ map: new THREE.TextureLoader().load('https://cdn.jsdelivr.net/gh/irsl-sbu/assets/texture.jpg'), side: THREE.DoubleSide }),
+        'uv-grid': new THREE.MeshBasicMaterial({ map: new THREE.TextureLoader().load('https://threejs.org/examples/textures/uv_grid_opengl.jpg'), side: THREE.DoubleSide })
       }
+
+
+      const world2robot = new THREE.Matrix4(
+        1, 0, 0, -(xMin + xMax) / 2,
+        0, 1, 0, -(yMin + yMax) / 2,
+        0, 0, 1, -zMin,
+        0, 0, 0, 1
+      )
+
+
+
+
+      //////////////////////////
+      //   SHARED VARIABLES   //
+      //////////////////////////
+      let robot = null,
+          ee2c = null,
+          world2ee = null,
+          plannedEEPoses = [],
+          plannedJointAngles = [],
+          playBackIntervalId = null,
+          cFrameGuidingPoses = [],
+          demonstrationSourceWorld2C,
+          demonstrationPassiveObjectBase2C,
+          ee2gripper = { demo: null, task: null }
+
+
+      function forwardKinematics(jointConfig, robotName) {
+        const jnt_axis = nj.array(robotConfiguration.joint_axes.split('\n').map(row => row.split(',').map(cell => parseFloat(cell)))),
+          jnt_q = nj.array(robotConfiguration.joint_q.split('\n').map(row => row.split(',').map(cell => parseFloat(cell)))),
+          joint_limits = nj.array(robotConfiguration.joint_limits.split('\n').map(row => row.split(',').map(cell => parseFloat(cell)))),
+          gst0 = nj.array(robotConfiguration.gst0.split('\n').map(row => row.split(',').map(cell => parseFloat(cell))))
+
+        const manipulator = jointNames[robotName].map((name, index) => {
+          const _jnt_axis = nj.concatenate(jnt_axis.slice(null, [index, index + 1]).flatten(), [0]),
+            normalized = Math.sqrt(nj.sum(nj.power(_jnt_axis, new Array(_jnt_axis.shape[0]).fill(2))))
+          return {
+            joint_type: 'Revolute',
+            joint_name: name,
+            joint_axis: nj.divide(_jnt_axis, new Array(_jnt_axis.shape[0]).fill(normalized)),
+            joint_limits: joint_limits.slice([index, index + 1], null).flatten(),
+            joint_q: nj.concatenate(jnt_q.slice(null, [index, index + 1]).flatten(), [0])
+          }
+        })
+        let g_base_tool = nj.identity(4, 'float')
+        manipulator.forEach((joint, index) => {
+          const g = nj.identity(4, 'float')
+          if (joint.joint_type === 'Revolute') { // Determine exponential for revolute joint
+            const m3 = new THREE.Matrix3(),
+              m4 = new THREE.Matrix4(),
+              quaternion = new THREE.Quaternion()
+            quaternion.setFromAxisAngle(new THREE.Vector3(...joint.joint_axis.slice([3]).tolist()), jointConfig[index])
+            m4.makeRotationFromQuaternion(quaternion)
+            m3.setFromMatrix4(m4)
+            const rotation_matrix = nj.array(m3.transpose().toArray()).reshape(3, 3)
+            g.slice([3], [3]).assign(rotation_matrix, false)
+            g.slice([3], [3, 4]).assign(nj.dot(nj.identity(3, 'float').subtract(rotation_matrix), joint.joint_q.slice([3])).reshape([3, 1]), false)
+          } else if (joint.joint_type === 'Prismatic') { // Determine exponential for prismatic joint
+            const transl_axis = joint.joint_axis.slice([3])
+            g.slice([3], [3, 4]).assign(nj.array(new Array(transl_axis.shape[0]).fill(jointConfig[index])).multiply(transl_axis).reshape([3, 1]), false)
+          }
+          g_base_tool = nj.dot(g_base_tool, g)
+        })
+        return nj.dot(g_base_tool, gst0)
+      }
+
+
+      //////////////////
+      //   RENDERER   //
+      //////////////////
+      const renderer = new THREE.WebGLRenderer({ antialias: true })
+      renderer.setSize(window.innerWidth, window.innerHeight)
+      renderer.setPixelRatio(window.devicePixelRatio)
+      renderer.autoClear = false
+      document.getElementById('canvas').appendChild(renderer.domElement)
+
+
+      ///////////////
+      //   SCENE   //
+      ///////////////
+      const scene = new THREE.Scene()
+      scene.background = new THREE.Color(0xAAAAAA)
+
+
+      ////////////////
+      //   CAMERA   //
+      ////////////////
+      const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 2000)
+      scene.position.set(0.8, 0, -0.5)
+      scene.rotation.set(Math.PI, -Math.PI, 0)
+      camera.position.set(-0.47032294759910875, 0.0011589439523173595, 0.13735579030424844)
+      camera.rotation.set(-0.008437332335459433, -1.2866433657214633, -1.5707963267948961)
       camera.up.set(1, 0, 0)
-      orbitControls.update()
-    })
 
-    parameters.grasp = async () => {
-      const offset = 0.2,
-        world2object = positionEulerToMatrix([0, 0, 0], [0, 0, 0])
 
-      const Module = await WasmModule()
+      //////////////////
+      //   CONTROLS   //
+      //////////////////
+      const orbitControls = new OrbitControls(camera, renderer.domElement)
 
-      function moveEE(initialJointConfig, goalPose) {
+
+      ///////////////
+      //   CLOCK   //
+      ///////////////
+      const clock = new THREE.Clock()
+
+
+      /////////////////////////
+      //   DIRECTION LIGHT   //
+      /////////////////////////
+      const directionLights = [
+        new THREE.DirectionalLight(0xffffff, 2),
+        new THREE.DirectionalLight(0xffffff, 2)
+      ]
+      directionLights[0].position.set(1, -1, 0)
+      directionLights[1].position.set(-1, -1, 0)
+      directionLights.forEach(light => scene.add(light))
+
+
+      /////////////////////
+      //   POINT LIGHT   //
+      /////////////////////
+      const pointLight = new THREE.PointLight(0xffffff, 5)
+      pointLight.position.set(0, 0, -1)
+      scene.add(pointLight)
+
+
+      ///////////////////////
+      //   AMBIENT LIGHT   //
+      ///////////////////////
+      const ambientLight = new THREE.AmbientLight(0x808080)
+      scene.add(ambientLight)
+
+
+      /////////////
+      //   FOG   //
+      /////////////
+      scene.fog = new THREE.FogExp2(0x888888, 0.0025)
+
+
+      /////////////////////
+      //   BASE FRAMES   //
+      /////////////////////
+      scene.add(new THREE.AxesHelper(0.04))
+      const { position: robotPosition, orientation: robotOrientation } = matrixToPositionEuler(world2robot)
+      scene.add(createFrame(robotPosition, robotOrientation))
+
+
+      /////////////////
+      //   SURFACE   //
+      /////////////////
+      const floor = new THREE.Mesh(new THREE.PlaneGeometry((xMax - xMin), (yMax - yMin)), materials.wood)
+      scene.add(floor)
+
+
+      /////////////////////
+      //   VIEW HELPER   //
+      /////////////////////
+      const helper = new ViewHelper(camera, renderer.domElement)
+      helper.setLabels('x', 'y', 'z')
+      helper.controls = orbitControls
+      helper.controls.center = orbitControls.target
+
+      const div = document.createElement('div')
+      div.id = 'viewHelper'
+      div.style.position = 'absolute'
+      div.style.bottom = div.style.right = 0
+      div.style.width = div.style.height = '128px'
+      document.getElementById('canvas').appendChild(div)
+
+      div.addEventListener('pointerup', event => helper.handleClick(event))
+
+
+      if (SHOW_HELPER) {
+        const dummyCamera = camera.clone()
+        dummyCamera.far /= 100
+        scene.add(dummyCamera)
+        scene.add(new THREE.CameraHelper(dummyCamera))
+
+        directionLights.forEach(light => scene.add(new THREE.DirectionalLightHelper(light, 0.1)))
+
+        scene.add(new THREE.PointLightHelper(pointLight, 0.1))
+
+        const grid = new THREE.GridHelper(
+          Math.max((xMax - xMin), (yMax - yMin)) * 1.1, 20,
+          0x222222, 0x777777
+        )
+        grid.rotateX(-Math.PI / 2)
+        scene.add(grid)
+      }
+
+
+      ///////////////
+      //   STATS   //
+      ///////////////
+      const stats = new Stats()
+      document.getElementById('canvas').appendChild(stats.dom)
+
+
+      ///////////////
+      //   ROBOT   //
+      ///////////////
+      function loadRobot(robotName, show) {
+        const urdfLoader = new URDFLoader(new THREE.LoadingManager())
+        urdfLoader.packages = {
+          baxter_description: 'https://cdn.jsdelivr.net/gh/irsl-sbu/baxter/baxter_description',
+          rethink_ee_description: 'https://cdn.jsdelivr.net/gh/irsl-sbu/baxter/rethink_ee_description',
+          Panda: 'https://cdn.jsdelivr.net/gh/irsl-sbu/FrankaPanda/deps/Panda'
+        }
+
+        let urdfPath
+        switch (robotName) {
+          case 'baxter':
+            // baxter_with_electric_gripper.urdf    or    baxter.urdf
+            urdfPath = urdfLoader.manager.resolveURL(`${urdfLoader.packages.baxter_description}/urdf/baxter_with_electric_gripper.urdf`)
+            break
+          case 'panda':
+            urdfPath = urdfLoader.manager.resolveURL(`${urdfLoader.packages.Panda}/panda.urdf`)
+        }
+        urdfLoader.manager.itemStart(urdfPath)
+        fetch(urdfPath)
+        .then(res => {
+          if (res.ok) return res.text()
+          else console.error(`Failed to load urdf '${urdfPath}' with error code ${res.status} : ${res.statusText}`)
+        })
+        .then(data => {
+          if (robot) {
+            robot.removeFromParent()
+            robot.geometry?.dispose()
+            robot.material?.dispose()
+          }
+          robot = urdfLoader.parse(data)
+          urdfLoader.manager.itemEnd(urdfPath)
+          robot.setJointValues(gripperAttributes[robotName].open)
+          robot.applyMatrix4(world2robot)
+          if (show)
+            scene.add(robot)
+          else
+            robot.removeFromParent()
+          console.log('Robot loaded')
+
+          const urdf = new DOMParser().parseFromString(data, 'application/xml')
+          if (urdf.querySelector('parsererror'))
+            console.error('Error while parsing URDF')
+          else {
+            function getJointValues(joint) {
+              const fields = { joint: { name: null, type: null }, parent: { link: null }, child: { link: null }, origin: { rpy: null, xyz: null }, axis: { xyz: null }, limit: { lower: null, upper: null } }
+              fields.joint.name = joint.getAttribute('name')
+              fields.joint.type = joint.getAttribute('type')
+              joint.childNodes.forEach(node => {
+                if (node.tagName in fields) {
+                  Object.keys(fields[node.tagName]).forEach(value => {
+                    fields[node.tagName][value] = node.getAttribute(value)
+                  })
+                }
+              })
+              return fields
+            }
+
+            const linkMap = {}
+            Array.from(urdf.getElementsByTagName('joint')).forEach(joint => {
+              const fields = getJointValues(joint)
+              if (!(fields.child.link in linkMap))
+                linkMap[fields.child.link] = []
+              linkMap[fields.child.link].push(fields)
+            })
+
+            const path = [getJointValues(urdf.querySelector(`joint[name="${endJoint[robotName]}"]`))]
+            while (path.at(-1).parent.link !== baseLink[robotName])
+              path.push(linkMap[path.at(-1).parent.link][0])
+
+            const matrix = new THREE.Matrix4().identity()
+            const manipulatorConfig = {}
+            for (const joint of path.reverse()) {
+              const rpy = joint.origin.rpy.split(' ').map(val => parseFloat(val)),
+                xyz = joint.origin.xyz.split(' ').map(val => parseFloat(val)),
+                rotX = new THREE.Matrix4().makeRotationX(rpy[0]),
+                rotY = new THREE.Matrix4().makeRotationY(rpy[1]),
+                rotZ = new THREE.Matrix4().makeRotationZ(rpy[2]),
+                rotation = new THREE.Matrix3().setFromMatrix4(matrix.multiply(rotZ.multiply(rotY).multiply(rotX).setPosition(...xyz)))
+              if (joint.axis.xyz) {
+                const axis = new THREE.Vector3(...joint.axis.xyz.split(' ').map(val => parseFloat(val))).applyMatrix3(rotation)
+                manipulatorConfig[joint.joint.name] = {
+                  axis: [axis.x, axis.y, axis.z],
+                  q: matrix.toArray().slice(12).slice(0, 3),
+                  limits: { lower: parseFloat(joint.limit.lower), upper: parseFloat(joint.limit.upper) }
+                }
+              }
+            }
+
+            ee2gripper.demo = positionEulerToMatrix(gripperAttributes[robotName].ee2object.position.demo, gripperAttributes[robotName].ee2object.orientation)
+            ee2gripper.task = positionEulerToMatrix(gripperAttributes[robotName].ee2object.position.task, gripperAttributes[robotName].ee2object.orientation)
+
+            robotConfiguration.gst0 = nj.array(matrix.transpose().toArray()).reshape(4, 4).tolist().map(row => row.map(n => `${n.toFixed(16)}`).join(',')).join('\n')
+            robotConfiguration.joint_axes = nj.array(jointNames[robotName].map(name => manipulatorConfig[name].axis)).T.tolist().map(row => row.map(n => `${n.toFixed(16)}`).join(',')).join('\n')
+            robotConfiguration.joint_q = nj.array(jointNames[robotName].map(name => manipulatorConfig[name].q)).T.tolist().map(row => row.map(n => `${n.toFixed(16)}`).join(',')).join('\n')
+            robotConfiguration.joint_limits = nj.array(jointNames[robotName].map(name => [manipulatorConfig[name].limits.lower, manipulatorConfig[name].limits.upper])).tolist().map(row => row.map(n => `${n.toFixed(16)}`).join(',')).join('\n')
+          }
+        })
+        .catch(e => {
+          console.error('Error loading URDF file: ', e)
+          urdfLoader.manager.itemError(urdfPath)
+          urdfLoader.manager.itemEnd(urdfPath)
+        })
+      }
+
+
+      /////////////
+      //   GUI   //
+      /////////////
+      const gui = new GUI({ title: 'Motion Transfer across Geometries' })
+
+      let props = gui.addFolder('Primary Object: Super-Elliptical Cylinder')
+
+      props.add(parameters, 'a', 0.01, 0.1).name('a').step(0.005).onChange(value => {
+        updatePrimaryObject({ ...parameters, a: value })
+        updatePassiveObject({ radius: destinationObjectRadius, height: destinationObjectHeight, position: { x: parameters.x, y: parameters.y, z: zMin }, isCylinder })
+      })
+      props.add(parameters, 'b', 0.01, 0.1).name('b').step(0.005).onChange(value => {
+        updatePrimaryObject({ ...parameters, b: value })
+        updatePassiveObject({ radius: destinationObjectRadius, height: destinationObjectHeight, position: { x: parameters.x, y: parameters.y, z: zMin }, isCylinder })
+      })
+      props.add(parameters, 'n', 0.5, 10).name('n').step(0.1).onChange(value => {
+        updatePrimaryObject({ ...parameters, n: value })
+        updatePassiveObject({ radius: destinationObjectRadius, height: destinationObjectHeight, position: { x: parameters.x, y: parameters.y, z: zMin }, isCylinder })
+      })
+      props.add(parameters, 'height', 0.01, 0.2).name('Height').step(0.01).onChange(value => updatePrimaryObject({ ...parameters, height: value }))
+
+      props = gui.addFolder('Passive Object: Location')
+
+      props.add(parameters, 'x', xMin, xMax).name('x').step(0.01).onChange(value => {
+        updatePrimaryObject({ ...parameters })
+        updatePassiveObject({ radius: destinationObjectRadius, height: destinationObjectHeight, position: { x: parameters.x, y: parameters.y, z: zMin }, isCylinder })
+      })
+      props.add(parameters, 'y', yMin, yMax).name('y').step(0.01).onChange(value => {
+        updatePrimaryObject({ ...parameters })
+        updatePassiveObject({ radius: destinationObjectRadius, height: destinationObjectHeight, position: { x: parameters.x, y: parameters.y, z: zMin }, isCylinder })
+      })
+
+      props = gui.addFolder('Shader Parameters')
+
+      parameters.segments = 100
+      props.add(parameters, 'segments', 10, 100).step(1).name('Sub Divisions').onChange(value => updatePrimaryObject({ ...parameters }))
+
+      parameters.material = 'shade'
+      props.add(parameters, 'material', ['norm', 'shade', 'wire', 'uv-grid', 'wood']).name('Material').onChange(value => updatePrimaryObject({ ...parameters }))
+
+      props.close()
+
+      parameters.showrobot = true
+      gui.add(parameters, 'showrobot').name('Show Robot').onChange(value => value ? scene.add(robot) : robot.removeFromParent())
+
+      parameters.robot = 'baxter'
+      loadRobot(parameters.robot, parameters.showrobot)
+      gui.add(parameters, 'robot', ['baxter', 'panda']).name('Choose Robot').onChange(value => loadRobot(value, parameters.showrobot))
+
+      parameters.camera = 'front'
+      gui.add(parameters, 'camera', ['top', 'head', 'front']).name('Reset Camera').onChange(value => {
+        orbitControls.reset()
+        scene.position.set(0, 0, 0)
+        scene.rotation.set(0, 0, 0)
+        switch (value) {
+          case 'top':
+            camera.position.set(0, 0, 0.65)
+            break
+          case 'front':
+            scene.position.set(0.8, 0, -0.5)
+            scene.rotation.set(Math.PI, -Math.PI, 0)
+            camera.position.set(-0.47032294759910875, 0.0011589439523173595, 0.13735579030424844)
+            camera.rotation.set(-0.008437332335459433, -1.2866433657214633, -1.5707963267948961)
+            break
+          case 'head':
+            camera.position.set(-0.43738477943382703, -0.0016711043884659604, 0.4435157392168402)
+            camera.rotation.set(-0.003767840310239346, -0.7784348493584072, -1.5707963267948961)
+        }
+        camera.up.set(1, 0, 0)
+        orbitControls.update()
+      })
+
+      parameters.grasp = async () => {
+        const offset = 0.2,
+          world2object = positionEulerToMatrix([0, 0, 0], [0, 0, 0])
+
+        const Module = await WasmModule()
+
+        function moveEE(initialJointConfig, goalPose) {
+          const initJointVector = new Module.VectorDouble()
+          for (const joint_angle of initialJointConfig)
+            initJointVector.push_back(joint_angle)
+          const _goalPose = new Module.VectorDouble(),
+            goalPoseVector = new Module.VectorVectorDouble()
+          goalPose.transpose().toArray().forEach(value => _goalPose.push_back(value))
+          goalPoseVector.push_back(_goalPose)
+          const { is_successful, failed_joint_id, joint_angles, task_space_poses } = Module.motionPlan(robotConfiguration, initJointVector, goalPoseVector)
+          if (!is_successful) console.error(is_successful, failed_joint_id)
+          const jointAngles = new Array(joint_angles.size()).fill().map((_, i) => {
+            const screwSegment = joint_angles.get(i)
+            return new Array(screwSegment.size()).fill().map((_, j) => {
+              const pose = screwSegment.get(j)
+              return new Array(pose.size()).fill().map((_, k) => pose.get(k))
+            })
+          }).flat()
+          const taskSpacePoses = new Array(task_space_poses.size()).fill().map((_, i) => {
+            const screwSegment = task_space_poses.get(i)
+            return new Array(screwSegment.size()).fill().map((_, j) => {
+              const pose = screwSegment.get(j)
+              return new Array(pose.size()).fill().map((_, k) => pose.get(k))
+            })
+          }).flat()
+          return { joint_angles: jointAngles, task_space_poses: taskSpacePoses }
+        }
+
+
+        let robot2ee = world2object.clone().multiply(positionEulerToMatrix([-parameters.a - offset, 0, 0], [0, 0, 0])).multiply(ee2gripper.task.clone().invert()).invert().multiply(world2robot).invert()
+        const { joint_angles: approachJointAngles } = moveEE(initialJointConfig[parameters.robot], robot2ee)
+
+
+        const openingSequenceLength = 10,
+          openingSequenceInterpolation = Object.assign(...Object.keys(gripperAttributes[parameters.robot].open).map(joint => ({ [joint]: (gripperAttributes[parameters.robot].open[joint] - gripperAttributes[parameters.robot].close[joint]) / openingSequenceLength }))),
+          openingSequence = [Object.assign({}, gripperAttributes[parameters.robot].close)]
+        let i = 0
+        while (i < openingSequenceLength) {
+          openingSequence.push(Object.assign({}, ...Object.entries(openingSequence.at(-1)).map(([joint, val]) => ({ [joint]: val + openingSequenceInterpolation[joint] }))))
+          i += 1
+        }
+
+
+        robot2ee = world2object.clone().multiply(positionEulerToMatrix([-parameters.a, 0, 0], [0, 0, 0])).multiply(ee2gripper.task.clone().invert()).invert().multiply(world2robot).invert()
+        const { joint_angles: translationJointAngles } = moveEE(approachJointAngles.at(-1), robot2ee)
+
+
+        robot2ee.fromArray(forwardKinematics(initialJointConfig[parameters.robot], parameters.robot).T.flatten().tolist())
+        const { joint_angles: retrievalJointAngles, task_space_poses: retrievalEEPoses } = moveEE(translationJointAngles.at(-1), robot2ee)
+
+
+        const primaryObject = scene.getObjectByName('primary_object')
+        robot.setJointValues(openingSequence[0])
+        let poseIndex = 0
+        playBackIntervalId = setInterval(() => {
+          if (poseIndex < approachJointAngles.length)
+            robot.setJointValues(Object.assign({}, ...jointNames[parameters.robot].map((name, index) => ({ [name]: approachJointAngles[poseIndex][index] }))))
+          else if (approachJointAngles.length <= poseIndex && poseIndex < approachJointAngles.length + openingSequence.length)
+            robot.setJointValues(openingSequence[poseIndex - approachJointAngles.length])
+          else if (approachJointAngles.length + openingSequence.length <= poseIndex && poseIndex < approachJointAngles.length + openingSequence.length + translationJointAngles.length)
+            robot.setJointValues(Object.assign({}, ...jointNames[parameters.robot].map((name, index) => ({ [name]: translationJointAngles[poseIndex - approachJointAngles.length - openingSequence.length][index] }))))
+          else if (approachJointAngles.length + openingSequence.length + translationJointAngles.length <= poseIndex && poseIndex < approachJointAngles.length + openingSequence.length + translationJointAngles.length + retrievalJointAngles.length) {
+            robot.setJointValues(Object.assign({}, ...jointNames[parameters.robot].map((name, index) => ({ [name]: retrievalJointAngles[poseIndex - approachJointAngles.length - openingSequence.length - translationJointAngles.length][index] }))))
+            const matrix = new THREE.Matrix4()
+            matrix.fromArray(retrievalEEPoses[poseIndex - approachJointAngles.length - openingSequence.length - translationJointAngles.length])
+            const objectPose = matrix.clone().multiply(ee2gripper.task).multiply(positionEulerToMatrix([parameters.a, 0, 0], [0, 0, 0])).premultiply(world2robot)
+            const { position: objectPosition, orientation: objectOrientation } = matrixToPositionEuler(objectPose)
+            primaryObject.position.copy(new THREE.Vector3(...objectPosition))
+            primaryObject.rotation.copy(new THREE.Euler(...objectOrientation))
+          } else
+            clearInterval(playBackIntervalId)
+          poseIndex += 1
+        }, 100)
+      }
+      const graspButton = gui.add(parameters, 'grasp').name('Grasp and Pickup Object')
+      graspButton.$name.style.color = '#98FB98'
+
+
+      parameters.upload = () => document.getElementById('upload').click()
+      gui.add(parameters, 'upload').name('Upload Demonstration Directory')
+
+
+      parameters.moveGripper = async () => {
+        world2ee = new THREE.Matrix4()
+        world2ee.fromArray(forwardKinematics(initialJointConfig[parameters.robot], parameters.robot).T.flatten().tolist())
+        world2ee.premultiply(world2robot)
+
+        const ee2object = ee2gripper.task.clone().multiply(positionEulerToMatrix([parameters.a, 0, 0], [0, 0, 0])),
+          objectPose = matrixToPositionEuler(world2robot.clone().invert().multiply(world2ee).multiply(ee2object))
+
+        updatePrimaryObject({ a: parameters.a, b: parameters.b, n: parameters.n, height: parameters.height, position: objectPose.position, orientation: objectPose.orientation })
+
+        const primaryObject = scene.getObjectByName('primary_object')
+
+        ee2c = ee2object.multiply(primaryObject.getObjectByName('c_frame').userData.base2c)
+
+        robot.setJointValues(Object.assign({}, ...jointNames[parameters.robot].map((name, index) => ({ [name]: initialJointConfig[parameters.robot][index] }))))
+
+
+        // demonstration C-Frame to C-Frame (primary w.r.t. passive) guiding pose computation
+        const demonstrationGeometry = JSON.parse(demonstration.geometry),
+          [demo_x, demo_y, demo_z] = demonstration.object_poses.split('\n').map(line => line.trim()).filter(line => line.length).slice(0, 3).map(row => parseFloat(row.split(',').at(-1))),
+          { position: [object_x, object_y, object_z] } = matrixToPositionEuler(world2ee.clone().multiply(ee2gripper.demo).multiply(positionEulerToMatrix([demonstrationGeometry.source.a, 0, 0], [0, 0, 0]))),
+          { position: cFramePosition, orientation: cFrameOrientation } = computePrimaryObjectCFrame(
+            { x: demo_x - object_x - (xMin + xMax) / 2, y: demo_y - object_y - (yMin + yMax) / 2, z: demo_z - object_z - zMin },
+            demonstrationGeometry.source.a,
+            demonstrationGeometry.source.b,
+            demonstrationGeometry.source.n,
+            demonstrationGeometry.source.height
+          ),
+          demonstrationSourceBase2c = positionEulerToMatrix(cFramePosition, cFrameOrientation),
+          demonstrationSourceBasePose = positionEulerToMatrix([object_x, object_y, object_z], [0, 0, 0])
+
+        let demonstrationEE2c = world2ee.clone().invert().multiply(demonstrationSourceBasePose).multiply(demonstrationSourceBase2c)
+
+        demonstrationSourceWorld2C = demonstrationSourceBasePose.clone().multiply(demonstrationSourceBase2c)
+
+
+
+
+        /******************* attach C-Frame to the primary object's lowest point in demo ****************************/
+        const nPoints = 100
+        const splitInterval = (start, end, n) => Array.from({ length: n + 1 }, (_, i) => start + (i * (end - start) / n)).slice(0, -1)
+        const demonstrationEE2samples = splitInterval(0, 2 * Math.PI, nPoints).map(θ => world2ee.clone().invert()
+          .multiply(demonstrationSourceBasePose)
+          .multiply(positionEulerToMatrix([0, 0, demonstrationGeometry.source.height], [0, 0, 0]))
+          .multiply(positionEulerToMatrix([
+            sign(Math.cos(θ)) * demonstrationGeometry.source.a * Math.abs(Math.cos(θ)) ** (2 / demonstrationGeometry.source.n),
+            sign(Math.sin(θ)) * demonstrationGeometry.source.b * Math.abs(Math.sin(θ)) ** (2 / demonstrationGeometry.source.n),
+            0
+          ], [0, 0, θ]))
+        )
+
+
+        const Module = await WasmModule()
         const initJointVector = new Module.VectorDouble()
-        for (const joint_angle of initialJointConfig)
+        for (const joint_angle of initialJointConfig[parameters.robot])
           initJointVector.push_back(joint_angle)
-        const _goalPose = new Module.VectorDouble(),
-          goalPoseVector = new Module.VectorVectorDouble()
-        goalPose.transpose().toArray().forEach(value => _goalPose.push_back(value))
-        goalPoseVector.push_back(_goalPose)
-        const { is_successful, failed_joint_id, joint_angles, task_space_poses } = Module.motionPlan(robotConfiguration, initJointVector, goalPoseVector)
-        if (!is_successful) console.error(is_successful, failed_joint_id)
-        const jointAngles = new Array(joint_angles.size()).fill().map((_, i) => {
-          const screwSegment = joint_angles.get(i)
-          return new Array(screwSegment.size()).fill().map((_, j) => {
-            const pose = screwSegment.get(j)
-            return new Array(pose.size()).fill().map((_, k) => pose.get(k))
-          })
-        }).flat()
-        const taskSpacePoses = new Array(task_space_poses.size()).fill().map((_, i) => {
+        const goalPoseVector = new Module.VectorVectorDouble()
+        const demonstrationPassiveObjectPose = positionEulerToMatrix([demo_x, demo_y, demo_z], [0, 0, 0])
+        objectFrameGuidingPoses.forEach(poses => poses.forEach(pose => {
+          const matrix = new THREE.Matrix4()
+          const goalPose = new Module.VectorDouble()
+          matrix.fromArray(pose)
+          matrix.premultiply(demonstrationPassiveObjectPose)
+          matrix.transpose().toArray().forEach(value => goalPose.push_back(value))
+          goalPoseVector.push_back(goalPose)
+        }))
+        const { is_successful, failed_joint_id, task_space_poses } = Module.motionPlan(robotConfiguration, initJointVector, goalPoseVector)
+        if (!is_successful) {
+          alert('Plan generation to replicate demonstrated motion failed')
+          console.error(is_successful, failed_joint_id)
+        }
+        const demonstrationPlannedEEPoses = new Array(task_space_poses.size()).fill().map((_, i) => {
           const screwSegment = task_space_poses.get(i)
           return new Array(screwSegment.size()).fill().map((_, j) => {
             const pose = screwSegment.get(j)
             return new Array(pose.size()).fill().map((_, k) => pose.get(k))
           })
         }).flat()
-        return { joint_angles: jointAngles, task_space_poses: taskSpacePoses }
-      }
-
-
-      let robot2ee = world2object.clone().multiply(positionEulerToMatrix([-parameters.a - offset, 0, 0], [0, 0, 0])).multiply(ee2gripper.task.clone().invert()).invert().multiply(world2robot).invert()
-      const { joint_angles: approachJointAngles } = moveEE(initialJointConfig[parameters.robot], robot2ee)
-
-
-      const openingSequenceLength = 10,
-        openingSequenceInterpolation = Object.assign(...Object.keys(gripperAttributes[parameters.robot].open).map(joint => ({ [joint]: (gripperAttributes[parameters.robot].open[joint] - gripperAttributes[parameters.robot].close[joint]) / openingSequenceLength }))),
-        openingSequence = [Object.assign({}, gripperAttributes[parameters.robot].close)]
-      let i = 0
-      while (i < openingSequenceLength) {
-        openingSequence.push(Object.assign({}, ...Object.entries(openingSequence.at(-1)).map(([joint, val]) => ({ [joint]: val + openingSequenceInterpolation[joint] }))))
-        i += 1
-      }
-
-
-      robot2ee = world2object.clone().multiply(positionEulerToMatrix([-parameters.a, 0, 0], [0, 0, 0])).multiply(ee2gripper.task.clone().invert()).invert().multiply(world2robot).invert()
-      const { joint_angles: translationJointAngles } = moveEE(approachJointAngles.at(-1), robot2ee)
-
-
-      robot2ee.fromArray(forwardKinematics(initialJointConfig[parameters.robot], parameters.robot).T.flatten().tolist())
-      const { joint_angles: retrievalJointAngles, task_space_poses: retrievalEEPoses } = moveEE(translationJointAngles.at(-1), robot2ee)
-
-
-      const primaryObject = scene.getObjectByName('primary_object')
-      robot.setJointValues(openingSequence[0])
-      let poseIndex = 0
-      playBackIntervalId = setInterval(() => {
-        if (poseIndex < approachJointAngles.length)
-          robot.setJointValues(Object.assign({}, ...jointNames[parameters.robot].map((name, index) => ({ [name]: approachJointAngles[poseIndex][index] }))))
-        else if (approachJointAngles.length <= poseIndex && poseIndex < approachJointAngles.length + openingSequence.length)
-          robot.setJointValues(openingSequence[poseIndex - approachJointAngles.length])
-        else if (approachJointAngles.length + openingSequence.length <= poseIndex && poseIndex < approachJointAngles.length + openingSequence.length + translationJointAngles.length)
-          robot.setJointValues(Object.assign({}, ...jointNames[parameters.robot].map((name, index) => ({ [name]: translationJointAngles[poseIndex - approachJointAngles.length - openingSequence.length][index] }))))
-        else if (approachJointAngles.length + openingSequence.length + translationJointAngles.length <= poseIndex && poseIndex < approachJointAngles.length + openingSequence.length + translationJointAngles.length + retrievalJointAngles.length) {
-          robot.setJointValues(Object.assign({}, ...jointNames[parameters.robot].map((name, index) => ({ [name]: retrievalJointAngles[poseIndex - approachJointAngles.length - openingSequence.length - translationJointAngles.length][index] }))))
-          const matrix = new THREE.Matrix4()
-          matrix.fromArray(retrievalEEPoses[poseIndex - approachJointAngles.length - openingSequence.length - translationJointAngles.length])
-          const objectPose = matrix.clone().multiply(ee2gripper.task).multiply(positionEulerToMatrix([parameters.a, 0, 0], [0, 0, 0])).premultiply(world2robot)
-          const { position: objectPosition, orientation: objectOrientation } = matrixToPositionEuler(objectPose)
-          primaryObject.position.copy(new THREE.Vector3(...objectPosition))
-          primaryObject.rotation.copy(new THREE.Euler(...objectOrientation))
-        } else
-          clearInterval(playBackIntervalId)
-        poseIndex += 1
-      }, 100)
-    }
-    gui.add(parameters, 'grasp').name('Grasp & Pickup Object')
-
-
-    parameters.upload = () => document.getElementById('upload').click()
-    gui.add(parameters, 'upload').name('Upload Demonstration Directory')
-
-
-    parameters.moveGripper = async () => {
-      world2ee = new THREE.Matrix4()
-      world2ee.fromArray(forwardKinematics(initialJointConfig[parameters.robot], parameters.robot).T.flatten().tolist())
-      world2ee.premultiply(world2robot)
-
-      const ee2object = ee2gripper.task.clone().multiply(positionEulerToMatrix([parameters.a, 0, 0], [0, 0, 0])),
-        objectPose = matrixToPositionEuler(world2robot.clone().invert().multiply(world2ee).multiply(ee2object))
-
-      updatePrimaryObject({ a: parameters.a, b: parameters.b, n: parameters.n, height: parameters.height, position: objectPose.position, orientation: objectPose.orientation })
-
-      const primaryObject = scene.getObjectByName('primary_object')
-
-      ee2c = ee2object.multiply(primaryObject.getObjectByName('c_frame').userData.base2c)
-
-      robot.setJointValues(Object.assign({}, ...jointNames[parameters.robot].map((name, index) => ({ [name]: initialJointConfig[parameters.robot][index] }))))
-
-
-      // demonstration C-Frame to C-Frame (primary w.r.t. passive) guiding pose computation
-      const demonstrationGeometry = JSON.parse(demonstration.geometry),
-        [demo_x, demo_y, demo_z] = demonstration.object_poses.split('\n').map(line => line.trim()).filter(line => line.length).slice(0, 3).map(row => parseFloat(row.split(',').at(-1))),
-        { position: [object_x, object_y, object_z] } = matrixToPositionEuler(world2ee.clone().multiply(ee2gripper.demo).multiply(positionEulerToMatrix([demonstrationGeometry.source.a, 0, 0], [0, 0, 0]))),
-        { position: cFramePosition, orientation: cFrameOrientation } = computePrimaryObjectCFrame(
-          { x: demo_x - object_x - (xMin + xMax) / 2, y: demo_y - object_y - (yMin + yMax) / 2, z: demo_z - object_z - zMin },
-          demonstrationGeometry.source.a,
-          demonstrationGeometry.source.b,
-          demonstrationGeometry.source.n,
-          demonstrationGeometry.source.height
-        ),
-        demonstrationSourceBase2c = positionEulerToMatrix(cFramePosition, cFrameOrientation),
-        demonstrationSourceBasePose = positionEulerToMatrix([object_x, object_y, object_z], [0, 0, 0])
-
-      let demonstrationEE2c = world2ee.clone().invert().multiply(demonstrationSourceBasePose).multiply(demonstrationSourceBase2c)
-
-      demonstrationSourceWorld2C = demonstrationSourceBasePose.clone().multiply(demonstrationSourceBase2c)
-
-
-
-
-      /******************* attach C-Frame to the primary object's lowest point in demo ****************************/
-      const nPoints = 100
-      const splitInterval = (start, end, n) => Array.from({ length: n + 1 }, (_, i) => start + (i * (end - start) / n)).slice(0, -1)
-      const demonstrationEE2samples = splitInterval(0, 2 * Math.PI, nPoints).map(θ => world2ee.clone().invert()
-        .multiply(demonstrationSourceBasePose)
-        .multiply(positionEulerToMatrix([0, 0, demonstrationGeometry.source.height], [0, 0, 0]))
-        .multiply(positionEulerToMatrix([
-          sign(Math.cos(θ)) * demonstrationGeometry.source.a * Math.abs(Math.cos(θ)) ** (2 / demonstrationGeometry.source.n),
-          sign(Math.sin(θ)) * demonstrationGeometry.source.b * Math.abs(Math.sin(θ)) ** (2 / demonstrationGeometry.source.n),
-          0
-        ], [0, 0, θ]))
-      )
-
-
-      // demonstrationEE2samples.forEach(pose => {
-      //   const { position, orientation } = matrixToPositionEuler(world2ee.clone().multiply(pose))
-      //   scene.add(createFrame(position, orientation, 0.01))
-      // })
-
-
-      const Module = await WasmModule()
-      const initJointVector = new Module.VectorDouble()
-      for (const joint_angle of initialJointConfig[parameters.robot])
-        initJointVector.push_back(joint_angle)
-      const goalPoseVector = new Module.VectorVectorDouble()
-      const demonstrationPassiveObjectPose = positionEulerToMatrix([demo_x, demo_y, demo_z], [0, 0, 0])
-      objectFrameGuidingPoses.forEach(poses => poses.forEach(pose => {
-        const matrix = new THREE.Matrix4()
-        const goalPose = new Module.VectorDouble()
-        matrix.fromArray(pose)
-        matrix.premultiply(demonstrationPassiveObjectPose)
-        matrix.transpose().toArray().forEach(value => goalPose.push_back(value))
-        goalPoseVector.push_back(goalPose)
-      }))
-      const { is_successful, failed_joint_id, task_space_poses } = Module.motionPlan(robotConfiguration, initJointVector, goalPoseVector)
-      if (!is_successful) {
-        alert('Plan generation to replicate demonstrated motion failed')
-        console.error(is_successful, failed_joint_id)
-      }
-      const demonstrationPlannedEEPoses = new Array(task_space_poses.size()).fill().map((_, i) => {
-        const screwSegment = task_space_poses.get(i)
-        return new Array(screwSegment.size()).fill().map((_, j) => {
-          const pose = screwSegment.get(j)
-          return new Array(pose.size()).fill().map((_, k) => pose.get(k))
-        })
-      }).flat()
-      let lowestPointIndex = null,
-        lowestPointX, lowestPointY,
-        lowestPointZ = Number.MAX_VALUE
-      demonstrationPlannedEEPoses.forEach(pose => {
-        const eePose = new THREE.Matrix4()
-        eePose.fromArray(pose)
-        demonstrationEE2samples.forEach((samplePose, index) => {
-          const { position: [x, y, z] } = matrixToPositionEuler(eePose.clone().multiply(samplePose))
-          if (z < lowestPointZ) {
-            lowestPointX = x
-            lowestPointY = y
-            lowestPointZ = z
-            lowestPointIndex = index
-          }
-        })
-      })
-      console.log(`Lowest point is at index: ${lowestPointIndex}`)
-      demonstrationEE2c = demonstrationEE2samples[lowestPointIndex]
-      demonstrationSourceWorld2C = world2ee.clone().multiply(demonstrationEE2c)
-      /************************************************************************************************************/
-
-
-
-
-
-      const { position: [cFramePrimaryX, cFramePrimaryY] } = matrixToPositionEuler(demonstrationSourceWorld2C)
-      demonstrationPassiveObjectBase2C = positionEulerToMatrix(
-        [lowestPointX - demo_x, lowestPointY - demo_y, demonstrationGeometry.destination.height],
-        [0, 0, Math.atan2((yMin + yMax) / 2 + cFramePrimaryY - demo_y, (xMin + xMax) / 2 + cFramePrimaryX - demo_x)]
-      )
-      const demonstrationPassiveObjectC2Base = demonstrationPassiveObjectBase2C.clone().invert()
-      cFrameGuidingPoses = objectFrameGuidingPoses.map(poses => poses.map(pose => {
-        const matrix = new THREE.Matrix4()
-        matrix.fromArray(pose)
-        return matrix.premultiply(demonstrationPassiveObjectC2Base).multiply(demonstrationEE2c)
-      }))
-
-
-
-
-      let status = await generatePlan({ x: parameters.x, y: parameters.y, z: zMin }, false, false)
-      if (!status) {
-        for (let x = xMin; x <= xMax; x += 0.02) {
-          for (let y = yMin; y <= yMax; y += 0.02) {
-            status = await generatePlan({ x, y, z: zMin }, false, false)
-            if (status) {
-              alert(`Plan generation at current object location failed\nTry changing destination to { x: ${x.toFixed(2)}, y: ${y.toFixed(2)} }`)
-              break
+        let lowestPointIndex = null,
+          lowestPointX, lowestPointY,
+          lowestPointZ = Number.MAX_VALUE
+        demonstrationPlannedEEPoses.forEach(pose => {
+          const eePose = new THREE.Matrix4()
+          eePose.fromArray(pose)
+          demonstrationEE2samples.forEach((samplePose, index) => {
+            const { position: [x, y, z] } = matrixToPositionEuler(eePose.clone().multiply(samplePose))
+            if (z < lowestPointZ) {
+              lowestPointX = x
+              lowestPointY = y
+              lowestPointZ = z
+              lowestPointIndex = index
             }
-          }
-          if (status) break
-        }
-      }
+          })
+        })
+        console.log(`Lowest point is at index: ${lowestPointIndex}`)
+        demonstrationEE2c = demonstrationEE2samples[lowestPointIndex]
+        demonstrationSourceWorld2C = world2ee.clone().multiply(demonstrationEE2c)
+        /************************************************************************************************************/
 
 
 
 
-      /******** render the demonstration objects ********/
-      const showAtGuidingPoseIndex = 1
-      const demoPrimary = new THREE.Group()
-      const cylinder = new THREE.Mesh(
-        new THREE.CylinderGeometry(demonstrationGeometry.source.a, demonstrationGeometry.source.a, demonstrationGeometry.source.height, 20, 20, true),
-        materials.shade.clone()
-      )
-      const base = new THREE.Mesh(new THREE.CircleGeometry(demonstrationGeometry.source.a), materials.shade.clone())
-      const rim = new THREE.Mesh(new THREE.TorusGeometry(demonstrationGeometry.source.a, demonstrationGeometry.source.a * 1 / 100, 20, 100), materials.shade.clone())
-      cylinder.rotation.x = -Math.PI / 2
-      cylinder.position.z += demonstrationGeometry.source.height / 2
-      cylinder.material.color.setHex(0x880000)
-      base.material.color.setHex(0x888800)
-      rim.material.color.setHex(0x888800)
-      cylinder.material.transparent = base.material.transparent = rim.material.transparent = true
-      cylinder.material.opacity = base.material.opacity = rim.material.opacity = 0.25
-      demoPrimary.add(cylinder).add(base).add(rim)
-      const demonstrationPrimaryBase2C = demonstrationSourceBasePose.clone().invert().multiply(demonstrationSourceWorld2C)
-      const demonstrationPrimaryC = matrixToPositionEuler(positionEulerToMatrix([0, 0, 0], [0, 0, 0]).multiply(demonstrationPrimaryBase2C))
-      demoPrimary.add(createFrame(demonstrationPrimaryC.position, demonstrationPrimaryC.orientation, 0.01))
-      scene.add(demoPrimary)
-      const robot2DemonstrationPassiveObject = positionEulerToMatrix([demo_x, demo_y, demo_z], [0, 0, 0])
-      const { position: demoPrimaryPosition, orientation: demoPrimaryOrientation } = matrixToPositionEuler(robot2DemonstrationPassiveObject.clone().multiply(demonstrationPassiveObjectBase2C).multiply(cFrameGuidingPoses[0][showAtGuidingPoseIndex]).multiply(demonstrationPrimaryBase2C.clone().invert()).premultiply(world2robot))
-      demoPrimary.position.copy(new THREE.Vector3(...demoPrimaryPosition))
-      demoPrimary.rotation.copy(new THREE.Euler(...demoPrimaryOrientation))
-      const demoPassive = createPassiveObject({
-        radius: demonstrationGeometry.destination.a,
-        height: demonstrationGeometry.destination.height,
-        position: { x: demo_x, y: demo_y, z: demo_z },
-        name: '',
-        isCylinder: false,
-        cFramePrimary: matrixToPositionEuler(demonstrationSourceWorld2C),
-      })
-      demoPassive.remove(demoPassive.getObjectByName('c_frame'))
-      const demonstrationPassiveC = matrixToPositionEuler(robot2DemonstrationPassiveObject.clone().multiply(demonstrationPassiveObjectBase2C).premultiply(world2robot))
-      scene.add(createFrame(demonstrationPassiveC.position, demonstrationPassiveC.orientation, 0.01))
-      demoPassive.children.forEach(child => {
-        if (child.isMesh) {
-          child.material.transparent = true
-          child.material.opacity = 0.3
-        }
-      })
-      scene.add(demoPassive)
 
-      // demonstration C-Frame to C-Frame guiding poses
-      cFrameGuidingPoses.forEach(poses => poses.forEach(pose => {
-        const matrix = new THREE.Matrix4()
-        matrix.multiplyMatrices(robot2DemonstrationPassiveObject, demonstrationPassiveObjectBase2C).multiply(pose)
-        const { position, orientation } = matrixToPositionEuler(matrix.premultiply(world2robot))
-        scene.add(createFrame(position, orientation, 0.01))
-      }))
-      /**************************************************/
-    }
-    gui.add(parameters, 'moveGripper').name('Move to Initial Configuration')
-
-
-    const generatePlan = async (objectDestination = { x: parameters.x, y: parameters.y, z: zMin }, showFrames = true, alertOnFailure = true) => {
-
-      updatePassiveObject({ radius: destinationObjectRadius, height: destinationObjectHeight, position: objectDestination, isCylinder })
-
-      const newDestinationObjectPose = positionEulerToMatrix([objectDestination.x, objectDestination.y, objectDestination.z], [0, 0, 0])
-      const passiveObject = scene.getObjectByName('passive_object')
-      const passiveObjectCFrame = passiveObject.getObjectByName('c_frame')
-      const passiveObjectBase2C = passiveObjectCFrame.userData.base2c
-
-      const primaryC2FirstGuidingC = new THREE.Matrix4().identity()
-      /******** additional heuristic to simplify the initial screw-segment ********/
-      primaryC2FirstGuidingC.multiplyMatrices(newDestinationObjectPose, passiveObjectBase2C).multiply(cFrameGuidingPoses[0][0]).premultiply(world2robot)
-      primaryC2FirstGuidingC.multiplyMatrices(world2ee.clone().multiply(ee2c).invert(), primaryC2FirstGuidingC)
-      const { orientation: [θx, θy, θz] } = matrixToPositionEuler(primaryC2FirstGuidingC)
-      primaryC2FirstGuidingC.makeRotationFromEuler(new THREE.Euler(θx, θy, θz))
-      const { position: destinationPosition, orientation: destinationOrientation } = matrixToPositionEuler(
-        positionEulerToMatrix([objectDestination.x, objectDestination.y, objectDestination.z], [0, 0, 0])
-          .premultiply(world2robot)
-          .multiply(passiveObjectBase2C)
-          .multiply(primaryC2FirstGuidingC.clone().invert())
-      )
-      const cFrame = createFrame(destinationPosition, destinationOrientation, 0.01)
-      cFrame.name = 'c_frame'
-      cFrame.userData.base2c = positionEulerToMatrix([objectDestination.x, objectDestination.y, objectDestination.z], [0, 0, 0]).premultiply(world2robot).invert().multiply(positionEulerToMatrix(destinationPosition, destinationOrientation))
-      passiveObjectCFrame.removeFromParent()
-      passiveObjectCFrame.children.forEach(mesh => {
-        mesh.geometry.dispose()
-        mesh.material.dispose()
-      })
-      passiveObject.add(cFrame)
-      /****************************************************************************/
-
-
-      // new task instance C-Frame to C-Frame guiding pose transfer
-      if (showFrames) {
-        cFrameGuidingPoses.forEach(poses => poses.forEach((pose, index) => {
+        const { position: [cFramePrimaryX, cFramePrimaryY] } = matrixToPositionEuler(demonstrationSourceWorld2C)
+        demonstrationPassiveObjectBase2C = positionEulerToMatrix(
+          [lowestPointX - demo_x, lowestPointY - demo_y, demonstrationGeometry.destination.height],
+          [0, 0, Math.atan2((yMin + yMax) / 2 + cFramePrimaryY - demo_y, (xMin + xMax) / 2 + cFramePrimaryX - demo_x)]
+        )
+        const demonstrationPassiveObjectC2Base = demonstrationPassiveObjectBase2C.clone().invert()
+        cFrameGuidingPoses = objectFrameGuidingPoses.map(poses => poses.map(pose => {
           const matrix = new THREE.Matrix4()
-          matrix.multiplyMatrices(newDestinationObjectPose, passiveObjectBase2C).multiply(primaryC2FirstGuidingC.clone().invert()).multiply(pose)
+          matrix.fromArray(pose)
+          return matrix.premultiply(demonstrationPassiveObjectC2Base).multiply(demonstrationEE2c)
+        }))
+
+
+
+
+        let status = await generatePlan({ x: parameters.x, y: parameters.y, z: zMin }, false, false)
+        if (!status) {
+          for (let x = xMin; x <= xMax; x += 0.02) {
+            for (let y = yMin; y <= yMax; y += 0.02) {
+              status = await generatePlan({ x, y, z: zMin }, false, false)
+              if (status) {
+                alert(`Plan generation at current object location failed\nTry changing destination to { x: ${x.toFixed(2)}, y: ${y.toFixed(2)} }`)
+                break
+              }
+            }
+            if (status) break
+          }
+        }
+
+
+
+
+        /******** render the demonstration objects ********/
+        const showAtGuidingPoseIndex = 1
+        const demoPrimary = new THREE.Group()
+        const cylinder = new THREE.Mesh(
+          new THREE.CylinderGeometry(demonstrationGeometry.source.a, demonstrationGeometry.source.a, demonstrationGeometry.source.height, 20, 20, true),
+          materials.shade.clone()
+        )
+        const base = new THREE.Mesh(new THREE.CircleGeometry(demonstrationGeometry.source.a), materials.shade.clone())
+        const rim = new THREE.Mesh(new THREE.TorusGeometry(demonstrationGeometry.source.a, demonstrationGeometry.source.a * 1 / 100, 20, 100), materials.shade.clone())
+        cylinder.rotation.x = -Math.PI / 2
+        cylinder.position.z += demonstrationGeometry.source.height / 2
+        cylinder.material.color.setHex(0x880000)
+        base.material.color.setHex(0x888800)
+        rim.material.color.setHex(0x888800)
+        cylinder.material.transparent = base.material.transparent = rim.material.transparent = true
+        cylinder.material.opacity = base.material.opacity = rim.material.opacity = 0.25
+        demoPrimary.add(cylinder).add(base).add(rim)
+        const demonstrationPrimaryBase2C = demonstrationSourceBasePose.clone().invert().multiply(demonstrationSourceWorld2C)
+        const demonstrationPrimaryC = matrixToPositionEuler(positionEulerToMatrix([0, 0, 0], [0, 0, 0]).multiply(demonstrationPrimaryBase2C))
+        demoPrimary.add(createFrame(demonstrationPrimaryC.position, demonstrationPrimaryC.orientation, 0.01))
+        scene.add(demoPrimary)
+        const robot2DemonstrationPassiveObject = positionEulerToMatrix([demo_x, demo_y, demo_z], [0, 0, 0])
+        const { position: demoPrimaryPosition, orientation: demoPrimaryOrientation } = matrixToPositionEuler(robot2DemonstrationPassiveObject.clone().multiply(demonstrationPassiveObjectBase2C).multiply(cFrameGuidingPoses[0][showAtGuidingPoseIndex]).multiply(demonstrationPrimaryBase2C.clone().invert()).premultiply(world2robot))
+        demoPrimary.position.copy(new THREE.Vector3(...demoPrimaryPosition))
+        demoPrimary.rotation.copy(new THREE.Euler(...demoPrimaryOrientation))
+        const demoPassive = createPassiveObject({
+          radius: demonstrationGeometry.destination.a,
+          height: demonstrationGeometry.destination.height,
+          position: { x: demo_x, y: demo_y, z: demo_z },
+          name: '',
+          isCylinder: false,
+          cFramePrimary: matrixToPositionEuler(demonstrationSourceWorld2C),
+        })
+        demoPassive.remove(demoPassive.getObjectByName('c_frame'))
+        const demonstrationPassiveC = matrixToPositionEuler(robot2DemonstrationPassiveObject.clone().multiply(demonstrationPassiveObjectBase2C).premultiply(world2robot))
+        scene.add(createFrame(demonstrationPassiveC.position, demonstrationPassiveC.orientation, 0.01))
+        demoPassive.children.forEach(child => {
+          if (child.isMesh) {
+            child.material.transparent = true
+            child.material.opacity = 0.3
+          }
+        })
+        scene.add(demoPassive)
+
+        // demonstration C-Frame to C-Frame guiding poses
+        cFrameGuidingPoses.forEach(poses => poses.forEach(pose => {
+          const matrix = new THREE.Matrix4()
+          matrix.multiplyMatrices(robot2DemonstrationPassiveObject, demonstrationPassiveObjectBase2C).multiply(pose)
           const { position, orientation } = matrixToPositionEuler(matrix.premultiply(world2robot))
           scene.add(createFrame(position, orientation, 0.01))
         }))
+        /**************************************************/
       }
+      gui.add(parameters, 'moveGripper').name('Move to Initial Configuration')
 
 
-      const Module = await WasmModule()
+      const generatePlan = async (objectDestination = { x: parameters.x, y: parameters.y, z: zMin }, showFrames = true, alertOnFailure = true) => {
 
-      const initJointVector = new Module.VectorDouble()
-      for (const joint_angle of initialJointConfig[parameters.robot])
-        initJointVector.push_back(joint_angle)
+        updatePassiveObject({ radius: destinationObjectRadius, height: destinationObjectHeight, position: objectDestination, isCylinder })
 
-      const goalPoseVector = new Module.VectorVectorDouble()
+        const newDestinationObjectPose = positionEulerToMatrix([objectDestination.x, objectDestination.y, objectDestination.z], [0, 0, 0])
+        const passiveObject = scene.getObjectByName('passive_object')
+        const passiveObjectCFrame = passiveObject.getObjectByName('c_frame')
+        const passiveObjectBase2C = passiveObjectCFrame.userData.base2c
 
-      cFrameGuidingPoses.forEach(poses => poses.forEach(pose => {
-        const matrix = new THREE.Matrix4()
-        const goalPose = new Module.VectorDouble()
-        // matrix.multiplyMatrices(newDestinationObjectPose, passiveObjectBase2C).multiply(pose)
-        matrix.multiplyMatrices(newDestinationObjectPose, passiveObjectBase2C).multiply(primaryC2FirstGuidingC.clone().invert()).multiply(pose)
-        matrix.multiply(ee2c.clone().invert())
-        matrix.transpose().toArray().forEach(value => goalPose.push_back(value))
-        goalPoseVector.push_back(goalPose)
-      }))
-
-      const { is_successful, failed_joint_id, joint_angles, task_space_poses } = Module.motionPlan(robotConfiguration, initJointVector, goalPoseVector)
-      plannedJointAngles = new Array(joint_angles.size()).fill().map((_, i) => {
-        const screwSegment = joint_angles.get(i)
-        return new Array(screwSegment.size()).fill().map((_, j) => {
-          const pose = screwSegment.get(j)
-          return new Array(pose.size()).fill().map((_, k) => pose.get(k))
+        const primaryC2FirstGuidingC = new THREE.Matrix4().identity()
+        /******** additional heuristic to simplify the initial screw-segment ********/
+        primaryC2FirstGuidingC.multiplyMatrices(newDestinationObjectPose, passiveObjectBase2C).multiply(cFrameGuidingPoses[0][0]).premultiply(world2robot)
+        primaryC2FirstGuidingC.multiplyMatrices(world2ee.clone().multiply(ee2c).invert(), primaryC2FirstGuidingC)
+        const { orientation: [θx, θy, θz] } = matrixToPositionEuler(primaryC2FirstGuidingC)
+        primaryC2FirstGuidingC.makeRotationFromEuler(new THREE.Euler(θx, θy, θz))
+        const { position: destinationPosition, orientation: destinationOrientation } = matrixToPositionEuler(
+          positionEulerToMatrix([objectDestination.x, objectDestination.y, objectDestination.z], [0, 0, 0])
+            .premultiply(world2robot)
+            .multiply(passiveObjectBase2C)
+            .multiply(primaryC2FirstGuidingC.clone().invert())
+        )
+        const cFrame = createFrame(destinationPosition, destinationOrientation, 0.01)
+        cFrame.name = 'c_frame'
+        cFrame.userData.base2c = positionEulerToMatrix([objectDestination.x, objectDestination.y, objectDestination.z], [0, 0, 0]).premultiply(world2robot).invert().multiply(positionEulerToMatrix(destinationPosition, destinationOrientation))
+        passiveObjectCFrame.removeFromParent()
+        passiveObjectCFrame.children.forEach(mesh => {
+          mesh.geometry.dispose()
+          mesh.material.dispose()
         })
-      }).flat()
-      plannedEEPoses = new Array(task_space_poses.size()).fill().map((_, i) => {
-        const screwSegment = task_space_poses.get(i)
-        return new Array(screwSegment.size()).fill().map((_, j) => {
-          const pose = screwSegment.get(j)
-          return new Array(pose.size()).fill().map((_, k) => pose.get(k))
-        })
-      }).flat()
-      if (!is_successful) {
-        if (alertOnFailure)
-          alert('Plan generation failed')
-        console.log({ is_successful, failed_joint_id })
-      }
-      return is_successful
-    }
-    parameters.generatePlan = generatePlan
-    gui.add(parameters, 'generatePlan').name('Generate Motion Plan')
+        passiveObject.add(cFrame)
+        /****************************************************************************/
 
 
-
-
-    parameters.snapShot = async () => {
-      const snapShotPoseIndices = [0, 3]
-      const [demo_x, demo_y, demo_z] = demonstration.object_poses.split('\n').map(line => line.trim()).filter(line => line.length).slice(0, 3).map(row => parseFloat(row.split(',').at(-1)))
-      const demonstrationObjectPose = positionEulerToMatrix([demo_x, demo_y, demo_z], [0, 0, 0])
-      const newDestinationObjectPose = positionEulerToMatrix([parameters.x, parameters.y, zMin], [0, 0, 0])
-      const passiveObjectBase2C = scene.getObjectByName('passive_object').getObjectByName('c_frame').userData.base2c
-      const object = scene.getObjectByName('primary_object'),
-        c2base = object.getObjectByName('c_frame').userData.base2c.clone().invert()
-      cFrameGuidingPoses.forEach(poses => poses.slice(0, -1).forEach((pose, index) => {
-        if (!snapShotPoseIndices.includes(index)) return
-        const matrix = new THREE.Matrix4()
-        matrix.multiplyMatrices(newDestinationObjectPose, passiveObjectBase2C).multiply(pose)
-        matrix.multiply(ee2c.clone().invert())
-        const objectPose = matrixToPositionEuler(matrix.multiply(ee2c).multiply(c2base).premultiply(world2robot))
-        const new_object = object.clone(true)
-        new_object.traverse(child => {
-          if (child.isMesh) {
-            child.material = child.material.clone()
-            child.material.transparent = true
-            child.material.opacity = 0.2 + (0.8 - 0.2) * snapShotPoseIndices.indexOf(index) / (snapShotPoseIndices.length - 1)
-          }
-        })
-        new_object.position.copy(new THREE.Vector3(...objectPose.position))
-        new_object.rotation.copy(new THREE.Euler(...objectPose.orientation))
-        scene.add(new_object)
-      }))
-    }
-    const snapShotButton = gui.add(parameters, 'snapShot').name('Capture Snap Shot')
-    snapShotButton.disable()
-
-
-    parameters.showTrajectory = false
-    gui.add(parameters, 'showTrajectory').name('Show Planned Trajectory').onChange(value => parameters.showTrajectory = value)
-
-    parameters.showBoundingBox = false
-    gui.add(parameters, 'showBoundingBox').name('Show Bounding Boxes').onChange(value => parameters.showBoundingBox = value)
-
-    parameters.playBack = false
-    const playBackButton = gui.add(parameters, 'playBack').name('Play Back Motion Plan')
-    playBackButton.$name.style.color = '#98FB98'
-    playBackButton.onChange(value => {
-      if (value) {
-        if (playBackIntervalId)
-          clearInterval(playBackIntervalId)
-
-        const primaryObject = scene.getObjectByName('primary_object'),
-          passiveObject = scene.getObjectByName('passive_object'),
-          c2base = primaryObject.getObjectByName('c_frame').userData.base2c.clone().invert()
-
-        if (parameters.showTrajectory) {
-          const trajectoryFrames = new THREE.Group()
-          trajectoryFrames.name = 'trajectory_frames'
-          scene.add(trajectoryFrames)
-          plannedEEPoses.forEach(pose => {
+        // new task instance C-Frame to C-Frame guiding pose transfer
+        if (showFrames) {
+          cFrameGuidingPoses.forEach(poses => poses.forEach((pose, index) => {
             const matrix = new THREE.Matrix4()
-            matrix.fromArray(pose)
-            const eePose = matrixToPositionEuler(matrix.clone().premultiply(world2robot)),
-              cPose = matrixToPositionEuler(matrix.multiply(ee2c).premultiply(world2robot))
-            const eeFrame = createFrame(eePose.position, eePose.orientation, 0.015),
-              cFrame = createFrame(cPose.position, cPose.orientation, 0.015)
-            trajectoryFrames.add(cFrame)
-            trajectoryFrames.add(eeFrame)
-          })
+            matrix.multiplyMatrices(newDestinationObjectPose, passiveObjectBase2C).multiply(primaryC2FirstGuidingC.clone().invert()).multiply(pose)
+            const { position, orientation } = matrixToPositionEuler(matrix.premultiply(world2robot))
+            scene.add(createFrame(position, orientation, 0.01))
+          }))
         }
 
-        let poseIndex = 0
-        playBackIntervalId = setInterval(() => {
 
-          robot.setJointValues(Object.assign({}, ...jointNames[parameters.robot].map((name, index) => ({ [name]: plannedJointAngles[poseIndex][index] }))))
+        const Module = await WasmModule()
 
+        const initJointVector = new Module.VectorDouble()
+        for (const joint_angle of initialJointConfig[parameters.robot])
+          initJointVector.push_back(joint_angle)
+
+        const goalPoseVector = new Module.VectorVectorDouble()
+
+        cFrameGuidingPoses.forEach(poses => poses.forEach(pose => {
           const matrix = new THREE.Matrix4()
-          matrix.fromArray(plannedEEPoses[poseIndex])
+          const goalPose = new Module.VectorDouble()
+          // matrix.multiplyMatrices(newDestinationObjectPose, passiveObjectBase2C).multiply(pose)
+          matrix.multiplyMatrices(newDestinationObjectPose, passiveObjectBase2C).multiply(primaryC2FirstGuidingC.clone().invert()).multiply(pose)
+          matrix.multiply(ee2c.clone().invert())
+          matrix.transpose().toArray().forEach(value => goalPose.push_back(value))
+          goalPoseVector.push_back(goalPose)
+        }))
 
-          const objectPose = matrix.clone().multiply(ee2c).multiply(c2base).premultiply(world2robot)
-          const { position: objectPosition, orientation: objectOrientation } = matrixToPositionEuler(objectPose)
-          primaryObject.position.copy(new THREE.Vector3(...objectPosition))
-          primaryObject.rotation.copy(new THREE.Euler(...objectOrientation))
-
-          const obb = new OBB()
-          const rotationMatrix = new THREE.Matrix3().setFromMatrix4(objectPose)
-          obb.copy(primaryObject.userData.bounding_box)
-          obb.set(new THREE.Vector3(...objectPosition).add(new THREE.Vector3(0, 0, obb.halfSize.z).applyMatrix3(rotationMatrix)), obb.halfSize, rotationMatrix)
-
-
-          /******** show bounding boxes ********/
-          if (parameters.showBoundingBox) {
-            const { orientation: rotation } = matrixToPositionEuler(new THREE.Matrix4().identity().setFromMatrix3(obb.rotation))
-            const box = new THREE.Mesh(
-              new THREE.BoxGeometry(2 * obb.halfSize.x, 2 * obb.halfSize.y, 2 * obb.halfSize.z),
-              new THREE.MeshBasicMaterial({ color: 0xdddddd, wireframe: true })
-            )
-            box.name = 'primary_bounding_box'
-            box.position.copy(new THREE.Vector3(obb.center.x, obb.center.y, obb.center.z))
-            box.rotation.copy(new THREE.Euler(...rotation))
-            const old_bounding_box = scene.getObjectByName(box.name)
-            if (old_bounding_box) {
-              old_bounding_box.removeFromParent()
-              old_bounding_box.geometry.dispose()
-              old_bounding_box.material.dispose()
-            }
-            scene.add(box)
-            if (passiveObject.userData.bounding_box_helper)
-              passiveObject.userData.bounding_box_helper.dispose()
-            passiveObject.userData.bounding_box_helper = new THREE.Box3Helper(passiveObject.userData.bounding_box, 0x444444)
-            scene.remove(passiveObject.userData.bounding_box_helper)
-            scene.add(passiveObject.userData.bounding_box_helper)
-          }
-          /*************************************/
-
-          passiveObject.userData.mesh.material.color.setHex(0xffffff)
-          if (obb.intersectsBox3(passiveObject.userData.bounding_box))
-            passiveObject.userData.mesh.material.color.setHex(0xff0000)
-          poseIndex = (poseIndex + 1) % plannedEEPoses.length
-        }, 100)
-      } else {
-        if (playBackIntervalId)
-          clearInterval(playBackIntervalId)
-        scene.remove(scene.getObjectByName('trajectory_frames'))
-      }
-    })
-
-
-
-
-    updatePrimaryObject({ a: parameters.a, b: parameters.b, n: parameters.n, height: parameters.height })
-    updatePassiveObject({ radius: destinationObjectRadius, height: destinationObjectHeight, position: { x: parameters.x, y: parameters.y, z: zMin }, isCylinder })
-
-
-
-
-    function animate() {
-      stats.begin()
-      requestAnimationFrame(animate)
-      if (helper.animating)
-        helper.update(clock.getDelta())
-      renderer.clear()
-      orbitControls.update()
-      renderer.render(scene, camera)
-      helper.render(renderer)
-      stats.end()
-    }
-
-
-    function matrixToPositionEuler(matrix) {
-      const euler = new THREE.Euler().setFromRotationMatrix(matrix)
-      const position = new THREE.Vector3().setFromMatrixPosition(matrix)
-      return { position: [position.x, position.y, position.z], orientation: [euler.x, euler.y, euler.z] }
-    }
-
-
-    function positionEulerToMatrix(position, orientation) {
-      const matrix = new THREE.Matrix4()
-      matrix.makeRotationFromEuler(new THREE.Euler(...orientation))
-      matrix.setPosition(...position)
-      return matrix
-    }
-
-
-    function sign(x) {
-      return x > 0 ? 1 : (x == 0 ? 0 : -1)
-    }
-
-
-    function distance(p1, p2) {
-      return Math.sqrt((p1.x - p2.x) ** 2 + (p1.y - p2.y) ** 2)
-    }
-
-
-    // super-elliptic cylinder parametric equations
-    function cylinder({ a, b, n, height }) {
-      const uMin = 0, uMax = 2 * Math.PI - Number.EPSILON,
-        vMin = 0, vMax = height,
-        uRange = uMax - uMin,
-        vRange = vMax - vMin
-
-      return (u0, v0, target) => {
-        const θ = uRange * u0 + uMin,
-          h = vRange * v0 + vMin
-
-        const x = sign(Math.cos(θ)) * a * Math.abs(Math.cos(θ)) ** (2 / n),
-          y = sign(Math.sin(θ)) * b * Math.abs(Math.sin(θ)) ** (2 / n),
-          z = h
-
-        target.set(x, y, z)
-      }
-    }
-
-
-    // super-elliptic disc parametric equations
-    function disc({ a, b, n }) {
-      const uMin = 0, uMax = 2 * Math.PI,
-        uRange = uMax - uMin
-
-      return (u0, v0, target) => {
-        const θ = uRange * u0 + uMin,
-          rMin = 0.005,
-          rMax = 1 / (Math.abs(Math.cos(θ) / a) ** n + Math.abs(Math.sin(θ) / b) ** n) ** (1 / n),
-          r = (rMax - rMin) * v0 + rMin
-
-        const x = r * Math.cos(θ),
-          y = r * Math.sin(θ),
-          z = 0
-
-        target.set(x, y, z)
-      }
-    }
-
-
-    // get the nearest point on the super-ellipse to the given point: {x, y}
-    function getNearest(a, b, n, point) {
-      const θ = Math.atan2(point.y, point.x),
-        r = 1 / (Math.abs(Math.cos(θ) / a) ** n + Math.abs(Math.sin(θ) / b) ** n) ** (1 / n),
-        x = r * Math.cos(θ),
-        y = r * Math.sin(θ)
-      return { x, y }
-    }
-
-
-    function computePrimaryObjectCFrame(destination, a, b, n, height) {
-      let { x, y } = getNearest(a, b, n, { x: destination.x, y: destination.y })
-
-      const dist_l = distance({ x: -a, y: 0 }, { x: destination.x, y: destination.y }),
-        dist_r = distance({ x: a, y: 0 }, { x: destination.x, y: destination.y }),
-        dist_t = distance({ x: 0, y: b }, { x: destination.x, y: destination.y }),
-        dist_b = distance({ x: 0, y: -b }, { x: destination.x, y: destination.y })
-
-      let nearestCorner = null, nearestCornerDistance = Number.MAX_VALUE
-      for (const corner of [{ x: -a, y: b }, { x: a, y: b }, { x: -a, y: -b }, { x: a, y: -b }]) {
-        const dist = distance(corner, { x: destination.x, y: destination.y })
-        if (dist < nearestCornerDistance) {
-          nearestCornerDistance = dist
-          nearestCorner = corner
+        const { is_successful, failed_joint_id, joint_angles, task_space_poses } = Module.motionPlan(robotConfiguration, initJointVector, goalPoseVector)
+        plannedJointAngles = new Array(joint_angles.size()).fill().map((_, i) => {
+          const screwSegment = joint_angles.get(i)
+          return new Array(screwSegment.size()).fill().map((_, j) => {
+            const pose = screwSegment.get(j)
+            return new Array(pose.size()).fill().map((_, k) => pose.get(k))
+          })
+        }).flat()
+        plannedEEPoses = new Array(task_space_poses.size()).fill().map((_, i) => {
+          const screwSegment = task_space_poses.get(i)
+          return new Array(screwSegment.size()).fill().map((_, j) => {
+            const pose = screwSegment.get(j)
+            return new Array(pose.size()).fill().map((_, k) => pose.get(k))
+          })
+        }).flat()
+        if (!is_successful) {
+          if (alertOnFailure)
+            alert('Plan generation failed')
+          console.log({ is_successful, failed_joint_id })
         }
+        return is_successful
       }
+      parameters.generatePlan = generatePlan
+      gui.add(parameters, 'generatePlan').name('Generate Motion Plan')
 
-      if (n > 2) {
-        const { x: cx, y: cy } = getNearest(a, b, n, nearestCorner)
-        x = cx
-        y = cy
-      } else if (n < 2) {
-        if (a > b) {
-          x = dist_l < dist_r ? -a : a
-          y = 0
-        } else if (b > a) {
-          x = 0
-          y = dist_t < dist_b ? b : -b
+
+
+
+      parameters.snapShot = async () => {
+        const snapShotPoseIndices = [0, 3]
+        const [demo_x, demo_y, demo_z] = demonstration.object_poses.split('\n').map(line => line.trim()).filter(line => line.length).slice(0, 3).map(row => parseFloat(row.split(',').at(-1)))
+        const demonstrationObjectPose = positionEulerToMatrix([demo_x, demo_y, demo_z], [0, 0, 0])
+        const newDestinationObjectPose = positionEulerToMatrix([parameters.x, parameters.y, zMin], [0, 0, 0])
+        const passiveObjectBase2C = scene.getObjectByName('passive_object').getObjectByName('c_frame').userData.base2c
+        const object = scene.getObjectByName('primary_object'),
+          c2base = object.getObjectByName('c_frame').userData.base2c.clone().invert()
+        cFrameGuidingPoses.forEach(poses => poses.slice(0, -1).forEach((pose, index) => {
+          if (!snapShotPoseIndices.includes(index)) return
+          const matrix = new THREE.Matrix4()
+          matrix.multiplyMatrices(newDestinationObjectPose, passiveObjectBase2C).multiply(pose)
+          matrix.multiply(ee2c.clone().invert())
+          const objectPose = matrixToPositionEuler(matrix.multiply(ee2c).multiply(c2base).premultiply(world2robot))
+          const new_object = object.clone(true)
+          new_object.traverse(child => {
+            if (child.isMesh) {
+              child.material = child.material.clone()
+              child.material.transparent = true
+              child.material.opacity = 0.2 + (0.8 - 0.2) * snapShotPoseIndices.indexOf(index) / (snapShotPoseIndices.length - 1)
+            }
+          })
+          new_object.position.copy(new THREE.Vector3(...objectPose.position))
+          new_object.rotation.copy(new THREE.Euler(...objectPose.orientation))
+          scene.add(new_object)
+        }))
+      }
+      const snapShotButton = gui.add(parameters, 'snapShot').name('Capture Snap Shot')
+      snapShotButton.disable()
+
+
+      parameters.showTrajectory = false
+      gui.add(parameters, 'showTrajectory').name('Show Planned Trajectory').onChange(value => parameters.showTrajectory = value)
+
+      parameters.showBoundingBox = false
+      gui.add(parameters, 'showBoundingBox').name('Show Bounding Boxes').onChange(value => parameters.showBoundingBox = value)
+
+      parameters.playBack = false
+      const playBackButton = gui.add(parameters, 'playBack').name('Play Back Motion Plan')
+      playBackButton.$name.style.color = '#98FB98'
+      playBackButton.onChange(value => {
+        if (value) {
+          if (playBackIntervalId)
+            clearInterval(playBackIntervalId)
+
+          const primaryObject = scene.getObjectByName('primary_object'),
+            passiveObject = scene.getObjectByName('passive_object'),
+            c2base = primaryObject.getObjectByName('c_frame').userData.base2c.clone().invert()
+
+          if (parameters.showTrajectory) {
+            const trajectoryFrames = new THREE.Group()
+            trajectoryFrames.name = 'trajectory_frames'
+            scene.add(trajectoryFrames)
+            plannedEEPoses.forEach(pose => {
+              const matrix = new THREE.Matrix4()
+              matrix.fromArray(pose)
+              const eePose = matrixToPositionEuler(matrix.clone().premultiply(world2robot)),
+                cPose = matrixToPositionEuler(matrix.multiply(ee2c).premultiply(world2robot))
+              const eeFrame = createFrame(eePose.position, eePose.orientation, 0.015),
+                cFrame = createFrame(cPose.position, cPose.orientation, 0.015)
+              trajectoryFrames.add(cFrame)
+              trajectoryFrames.add(eeFrame)
+            })
+          }
+
+          let poseIndex = 0
+          playBackIntervalId = setInterval(() => {
+
+            robot.setJointValues(Object.assign({}, ...jointNames[parameters.robot].map((name, index) => ({ [name]: plannedJointAngles[poseIndex][index] }))))
+
+            const matrix = new THREE.Matrix4()
+            matrix.fromArray(plannedEEPoses[poseIndex])
+
+            const objectPose = matrix.clone().multiply(ee2c).multiply(c2base).premultiply(world2robot)
+            const { position: objectPosition, orientation: objectOrientation } = matrixToPositionEuler(objectPose)
+            primaryObject.position.copy(new THREE.Vector3(...objectPosition))
+            primaryObject.rotation.copy(new THREE.Euler(...objectOrientation))
+
+            const obb = new OBB()
+            const rotationMatrix = new THREE.Matrix3().setFromMatrix4(objectPose)
+            obb.copy(primaryObject.userData.bounding_box)
+            obb.set(new THREE.Vector3(...objectPosition).add(new THREE.Vector3(0, 0, obb.halfSize.z).applyMatrix3(rotationMatrix)), obb.halfSize, rotationMatrix)
+
+
+            /******** show bounding boxes ********/
+            if (parameters.showBoundingBox) {
+              const { orientation: rotation } = matrixToPositionEuler(new THREE.Matrix4().identity().setFromMatrix3(obb.rotation))
+              const box = new THREE.Mesh(
+                new THREE.BoxGeometry(2 * obb.halfSize.x, 2 * obb.halfSize.y, 2 * obb.halfSize.z),
+                new THREE.MeshBasicMaterial({ color: 0xdddddd, wireframe: true })
+              )
+              box.name = 'primary_bounding_box'
+              box.position.copy(new THREE.Vector3(obb.center.x, obb.center.y, obb.center.z))
+              box.rotation.copy(new THREE.Euler(...rotation))
+              const old_bounding_box = scene.getObjectByName(box.name)
+              if (old_bounding_box) {
+                old_bounding_box.removeFromParent()
+                old_bounding_box.geometry.dispose()
+                old_bounding_box.material.dispose()
+              }
+              scene.add(box)
+              if (passiveObject.userData.bounding_box_helper)
+                passiveObject.userData.bounding_box_helper.dispose()
+              passiveObject.userData.bounding_box_helper = new THREE.Box3Helper(passiveObject.userData.bounding_box, 0x444444)
+              scene.remove(passiveObject.userData.bounding_box_helper)
+              scene.add(passiveObject.userData.bounding_box_helper)
+            }
+            /*************************************/
+
+            passiveObject.userData.mesh.material.color.setHex(0xffffff)
+            if (obb.intersectsBox3(passiveObject.userData.bounding_box))
+              passiveObject.userData.mesh.material.color.setHex(0xff0000)
+            poseIndex = (poseIndex + 1) % plannedEEPoses.length
+          }, 100)
         } else {
-          let nearestCorner = null, nearestCornerDistance = Number.MAX_VALUE
-          for (const corner of [{ x: -a, y: 0 }, { x: a, y: 0 }, { x: 0, y: b }, { x: 0, y: -b }]) {
-            const dist = distance(corner, { x: destination.x, y: destination.y })
-            if (dist < nearestCornerDistance) {
-              nearestCornerDistance = dist
-              nearestCorner = corner
-            }
+          if (playBackIntervalId)
+            clearInterval(playBackIntervalId)
+          scene.remove(scene.getObjectByName('trajectory_frames'))
+        }
+      })
+
+
+
+
+      updatePrimaryObject({ a: parameters.a, b: parameters.b, n: parameters.n, height: parameters.height })
+      updatePassiveObject({ radius: destinationObjectRadius, height: destinationObjectHeight, position: { x: parameters.x, y: parameters.y, z: zMin }, isCylinder })
+
+
+
+
+      function animate() {
+        stats.begin()
+        requestAnimationFrame(animate)
+        if (helper.animating)
+          helper.update(clock.getDelta())
+        renderer.clear()
+        orbitControls.update()
+        renderer.render(scene, camera)
+        helper.render(renderer)
+        stats.end()
+      }
+
+
+      function matrixToPositionEuler(matrix) {
+        const euler = new THREE.Euler().setFromRotationMatrix(matrix)
+        const position = new THREE.Vector3().setFromMatrixPosition(matrix)
+        return { position: [position.x, position.y, position.z], orientation: [euler.x, euler.y, euler.z] }
+      }
+
+
+      function positionEulerToMatrix(position, orientation) {
+        const matrix = new THREE.Matrix4()
+        matrix.makeRotationFromEuler(new THREE.Euler(...orientation))
+        matrix.setPosition(...position)
+        return matrix
+      }
+
+
+      function sign(x) {
+        return x > 0 ? 1 : (x == 0 ? 0 : -1)
+      }
+
+
+      function distance(p1, p2) {
+        return Math.sqrt((p1.x - p2.x) ** 2 + (p1.y - p2.y) ** 2)
+      }
+
+
+      // super-elliptic cylinder parametric equations
+      function cylinder({ a, b, n, height }) {
+        const uMin = 0, uMax = 2 * Math.PI - Number.EPSILON,
+          vMin = 0, vMax = height,
+          uRange = uMax - uMin,
+          vRange = vMax - vMin
+
+        return (u0, v0, target) => {
+          const θ = uRange * u0 + uMin,
+            h = vRange * v0 + vMin
+
+          const x = sign(Math.cos(θ)) * a * Math.abs(Math.cos(θ)) ** (2 / n),
+            y = sign(Math.sin(θ)) * b * Math.abs(Math.sin(θ)) ** (2 / n),
+            z = h
+
+          target.set(x, y, z)
+        }
+      }
+
+
+      // super-elliptic disc parametric equations
+      function disc({ a, b, n }) {
+        const uMin = 0, uMax = 2 * Math.PI,
+          uRange = uMax - uMin
+
+        return (u0, v0, target) => {
+          const θ = uRange * u0 + uMin,
+            rMin = 0.005,
+            rMax = 1 / (Math.abs(Math.cos(θ) / a) ** n + Math.abs(Math.sin(θ) / b) ** n) ** (1 / n),
+            r = (rMax - rMin) * v0 + rMin
+
+          const x = r * Math.cos(θ),
+            y = r * Math.sin(θ),
+            z = 0
+
+          target.set(x, y, z)
+        }
+      }
+
+
+      // get the nearest point on the super-ellipse to the given point: {x, y}
+      function getNearest(a, b, n, point) {
+        const θ = Math.atan2(point.y, point.x),
+          r = 1 / (Math.abs(Math.cos(θ) / a) ** n + Math.abs(Math.sin(θ) / b) ** n) ** (1 / n),
+          x = r * Math.cos(θ),
+          y = r * Math.sin(θ)
+        return { x, y }
+      }
+
+
+      function computePrimaryObjectCFrame(destination, a, b, n, height) {
+        let { x, y } = getNearest(a, b, n, { x: destination.x, y: destination.y })
+
+        const dist_l = distance({ x: -a, y: 0 }, { x: destination.x, y: destination.y }),
+          dist_r = distance({ x: a, y: 0 }, { x: destination.x, y: destination.y }),
+          dist_t = distance({ x: 0, y: b }, { x: destination.x, y: destination.y }),
+          dist_b = distance({ x: 0, y: -b }, { x: destination.x, y: destination.y })
+
+        let nearestCorner = null, nearestCornerDistance = Number.MAX_VALUE
+        for (const corner of [{ x: -a, y: b }, { x: a, y: b }, { x: -a, y: -b }, { x: a, y: -b }]) {
+          const dist = distance(corner, { x: destination.x, y: destination.y })
+          if (dist < nearestCornerDistance) {
+            nearestCornerDistance = dist
+            nearestCorner = corner
           }
-          x = nearestCorner.x
-          y = nearestCorner.y
         }
-      } else {
-        if (a > b) {
-          x = dist_l < dist_r ? -a : a
-          y = 0
-        } else if (b > a) {
-          x = 0
-          y = dist_t < dist_b ? b : -b
+
+        if (n > 2) {
+          const { x: cx, y: cy } = getNearest(a, b, n, nearestCorner)
+          x = cx
+          y = cy
+        } else if (n < 2) {
+          if (a > b) {
+            x = dist_l < dist_r ? -a : a
+            y = 0
+          } else if (b > a) {
+            x = 0
+            y = dist_t < dist_b ? b : -b
+          } else {
+            let nearestCorner = null, nearestCornerDistance = Number.MAX_VALUE
+            for (const corner of [{ x: -a, y: 0 }, { x: a, y: 0 }, { x: 0, y: b }, { x: 0, y: -b }]) {
+              const dist = distance(corner, { x: destination.x, y: destination.y })
+              if (dist < nearestCornerDistance) {
+                nearestCornerDistance = dist
+                nearestCorner = corner
+              }
+            }
+            x = nearestCorner.x
+            y = nearestCorner.y
+          }
+        } else {
+          if (a > b) {
+            x = dist_l < dist_r ? -a : a
+            y = 0
+          } else if (b > a) {
+            x = 0
+            y = dist_t < dist_b ? b : -b
+          }
         }
+
+        const θ = Math.atan2(y, x)
+
+        return { position: [x, y, height], orientation: [0, 0, θ] }
       }
 
-      const θ = Math.atan2(y, x)
 
-      return { position: [x, y, height], orientation: [0, 0, θ] }
-    }
-
-
-    function updatePrimaryObject({ a, b, n, height, position, orientation }) {
-      if (scene.getObjectByName('primary_object'))
-        scene.remove(scene.getObjectByName('primary_object'))
-      const bowl = createPrimaryObject({ a, b, n, height, position, orientation })
-      scene.add(bowl)
-    }
-
-
-    function createPrimaryObject({ a, b, n, height, position, orientation }) {
-      const objectPosition = position ?? [(xMin + xMax) / 2, (yMin + yMax) / 2, zMin + 0.00001],
-        objectOrientation = orientation ?? [0, 0, 0]
-
-      const cylinderGeometry = new ParametricGeometry(cylinder({ a, b, n, height }), parameters.segments, parameters.segments),
-        cylinderBaseGeometry = new ParametricGeometry(disc({ a, b, n }), parameters.segments, parameters.segments),
-        cylinderMesh = new THREE.Mesh(cylinderGeometry, materials[parameters.material])
-
-      const bowl = new THREE.Group()
-      bowl.name = 'primary_object'
-      bowl.add(cylinderMesh)
-
-      const cylinderBaseMesh = new THREE.Mesh(cylinderBaseGeometry, materials[parameters.material])
-      bowl.add(cylinderBaseMesh)
-
-      const [object_x, object_y, object_z] = objectPosition
-      const { position: cFramePosition, orientation: cFrameOrientation } = computePrimaryObjectCFrame({ x: parameters.x - object_x, y: parameters.y - object_y, z: zMin - object_z }, a, b, n, height)
-      const cFrame = createFrame(cFramePosition, cFrameOrientation, 0.01)
-      cFrame.userData.base2c = positionEulerToMatrix(cFramePosition, cFrameOrientation)
-      cFrame.name = 'c_frame'
-
-      bowl.add(cFrame)
-
-      bowl.position.set(...[object_x - (xMin + xMax) / 2, object_y - (yMin + yMax) / 2, object_z - zMin])
-      bowl.rotation.set(...objectOrientation)
-      bowl.updateMatrix()
-
-      cylinderGeometry.computeBoundingBox()
-      bowl.userData.bounding_box = new OBB().fromBox3(cylinderGeometry.boundingBox)
-
-      return bowl
-    }
-
-
-    function updatePassiveObject({ radius, height, position, isCylinder }) {
-      if (scene.getObjectByName('passive_object'))
-        scene.remove(scene.getObjectByName('passive_object'))
-      const primary = scene.getObjectByName('primary_object')
-      const bowl = createPassiveObject({
-        radius,
-        height,
-        position,
-        name: 'passive_object',
-        isCylinder,
-        cFramePrimary: matrixToPositionEuler(primary.matrix.clone().multiply(primary.getObjectByName('c_frame').userData.base2c))
-      })
-      scene.add(bowl)
-    }
-
-
-    function createPassiveObject({ radius, height, position, name, isCylinder, cFramePrimary: { position: [cFramePrimaryX, cFramePrimaryY] } }) {
-      const bowl = new THREE.Group()
-      bowl.name = name
-
-      const R = (height ** 2 + radius ** 2) / (2 * height),
-        θ = Math.acos(1 - height / R)
-
-      const { position: [x, y, z], orientation } = matrixToPositionEuler(
-        positionEulerToMatrix([position.x, position.y, position.z], [0, 0, 0]).premultiply(world2robot)
-      )
-
-      const color = '#fff',
-        mesh = new THREE.Mesh(
-          isCylinder ? new THREE.CylinderGeometry(radius, radius, height, 64, 1, true) : new THREE.SphereGeometry(R, 30, 30, 0, 2 * Math.PI, 0, θ),
-          new THREE.MeshLambertMaterial({ color, emissive: 0x888888, side: THREE.DoubleSide, flatShading: true })
-        )
-      mesh.rotation.x = -Math.PI / 2
-
-      if (!isCylinder)
-        mesh.position.set(x, y, z + R)
-      else {
-        mesh.position.set(x, y, z + height / 2)
-        const base = new THREE.Mesh(
-          new THREE.CircleGeometry(radius, 64),
-          new THREE.MeshLambertMaterial({ color, emissive: 0x888888, side: THREE.DoubleSide, flatShading: true })
-        )
-        base.position.set(x, y, z + 0.00001)
-        bowl.add(base)
+      function updatePrimaryObject({ a, b, n, height, position, orientation }) {
+        if (scene.getObjectByName('primary_object'))
+          scene.remove(scene.getObjectByName('primary_object'))
+        const bowl = createPrimaryObject({ a, b, n, height, position, orientation })
+        scene.add(bowl)
       }
 
-      mesh.castShadow = mesh.receiveShadow = true
-      bowl.add(mesh)
 
-      const rim = new THREE.Mesh(
-        new THREE.TorusGeometry(radius, radius * 5 / 100, 20, 100),
-        new THREE.MeshLambertMaterial({ color, emissive: 0x444444, side: THREE.DoubleSide, flatShading: true })
-      )
-      rim.position.copy(new THREE.Vector3(...[x, y, z + height]))
-      bowl.add(rim)
+      function createPrimaryObject({ a, b, n, height, position, orientation }) {
+        const objectPosition = position ?? [(xMin + xMax) / 2, (yMin + yMax) / 2, zMin + 0.00001],
+          objectOrientation = orientation ?? [0, 0, 0]
 
-      const light = new THREE.PointLight(0x000000, 1)
-      light.position.set(x, y, height / 2)
-      bowl.add(light)
+        const cylinderGeometry = new ParametricGeometry(cylinder({ a, b, n, height }), parameters.segments, parameters.segments),
+          cylinderBaseGeometry = new ParametricGeometry(disc({ a, b, n }), parameters.segments, parameters.segments),
+          cylinderMesh = new THREE.Mesh(cylinderGeometry, materials[parameters.material])
 
-      const cFramePrimaryθ = Math.atan2((yMin + yMax) / 2 + cFramePrimaryY - position.y, (xMin + xMax) / 2 + cFramePrimaryX - position.x)
-      const cFrame = createFrame([x, y, z + height], [0, 0, cFramePrimaryθ], 0.01)
-      cFrame.userData.base2c = positionEulerToMatrix([0, 0, height], [0, 0, cFramePrimaryθ])
-      cFrame.name = 'c_frame'
-      bowl.add(cFrame)
+        const bowl = new THREE.Group()
+        bowl.name = 'primary_object'
+        bowl.add(cylinderMesh)
 
-      bowl.userData.mesh = rim
-      bowl.userData.bounding_box = new THREE.Box3().setFromObject(mesh)
+        const cylinderBaseMesh = new THREE.Mesh(cylinderBaseGeometry, materials[parameters.material])
+        bowl.add(cylinderBaseMesh)
 
-      return bowl
-    }
+        const [object_x, object_y, object_z] = objectPosition
+        const { position: cFramePosition, orientation: cFrameOrientation } = computePrimaryObjectCFrame({ x: parameters.x - object_x, y: parameters.y - object_y, z: zMin - object_z }, a, b, n, height)
+        const cFrame = createFrame(cFramePosition, cFrameOrientation, 0.01)
+        cFrame.userData.base2c = positionEulerToMatrix(cFramePosition, cFrameOrientation)
+        cFrame.name = 'c_frame'
+
+        bowl.add(cFrame)
+
+        bowl.position.set(...[object_x - (xMin + xMax) / 2, object_y - (yMin + yMax) / 2, object_z - zMin])
+        bowl.rotation.set(...objectOrientation)
+        bowl.updateMatrix()
+
+        cylinderGeometry.computeBoundingBox()
+        bowl.userData.bounding_box = new OBB().fromBox3(cylinderGeometry.boundingBox)
+
+        return bowl
+      }
 
 
-    function createFrame(position, orientation, axisLength = 0.05) {
-      const axes = [
-        { axis: 'x', color: 0xff0000 },
-        { axis: 'y', color: 0x00ff00 },
-        { axis: 'z', color: 0x0000ff }
-      ]
-      const frame = new THREE.Group()
-      axes.forEach(({ axis, color }) => {
-        const origin = new THREE.Vector3(0, 0, 0),
-          lineEnd = origin.clone()
-        lineEnd[axis] += axisLength
-        const axisObject = new THREE.LineSegments(
-          new THREE.BufferGeometry().setFromPoints([origin, lineEnd]),
-          new THREE.LineDashedMaterial({ color, dashSize: 1, gapSize: 1 })
-        )
-
-        orientation.forEach((angle, index) => {
-          axisObject.rotation[axes[index].axis] = angle
+      function updatePassiveObject({ radius, height, position, isCylinder }) {
+        if (scene.getObjectByName('passive_object'))
+          scene.remove(scene.getObjectByName('passive_object'))
+        const primary = scene.getObjectByName('primary_object')
+        const bowl = createPassiveObject({
+          radius,
+          height,
+          position,
+          name: 'passive_object',
+          isCylinder,
+          cFramePrimary: matrixToPositionEuler(primary.matrix.clone().multiply(primary.getObjectByName('c_frame').userData.base2c))
         })
-
-        axisObject.position.add(new THREE.Vector3(...position))
-        frame.add(axisObject)
-      })
-      return frame
-    }
+        scene.add(bowl)
+      }
 
 
-    animate()
-  </script>
-</body>
+      function createPassiveObject({ radius, height, position, name, isCylinder, cFramePrimary: { position: [cFramePrimaryX, cFramePrimaryY] } }) {
+        const bowl = new THREE.Group()
+        bowl.name = name
 
+        const R = (height ** 2 + radius ** 2) / (2 * height),
+          θ = Math.acos(1 - height / R)
+
+        const { position: [x, y, z], orientation } = matrixToPositionEuler(
+          positionEulerToMatrix([position.x, position.y, position.z], [0, 0, 0]).premultiply(world2robot)
+        )
+
+        const color = '#fff',
+          mesh = new THREE.Mesh(
+            isCylinder ? new THREE.CylinderGeometry(radius, radius, height, 64, 1, true) : new THREE.SphereGeometry(R, 30, 30, 0, 2 * Math.PI, 0, θ),
+            new THREE.MeshLambertMaterial({ color, emissive: 0x888888, side: THREE.DoubleSide, flatShading: true })
+          )
+        mesh.rotation.x = -Math.PI / 2
+
+        if (!isCylinder)
+          mesh.position.set(x, y, z + R)
+        else {
+          mesh.position.set(x, y, z + height / 2)
+          const base = new THREE.Mesh(
+            new THREE.CircleGeometry(radius, 64),
+            new THREE.MeshLambertMaterial({ color, emissive: 0x888888, side: THREE.DoubleSide, flatShading: true })
+          )
+          base.position.set(x, y, z + 0.00001)
+          bowl.add(base)
+        }
+
+        mesh.castShadow = mesh.receiveShadow = true
+        bowl.add(mesh)
+
+        const rim = new THREE.Mesh(
+          new THREE.TorusGeometry(radius, radius * 5 / 100, 20, 100),
+          new THREE.MeshLambertMaterial({ color, emissive: 0x444444, side: THREE.DoubleSide, flatShading: true })
+        )
+        rim.position.copy(new THREE.Vector3(...[x, y, z + height]))
+        bowl.add(rim)
+
+        const light = new THREE.PointLight(0x000000, 1)
+        light.position.set(x, y, height / 2)
+        bowl.add(light)
+
+        const cFramePrimaryθ = Math.atan2((yMin + yMax) / 2 + cFramePrimaryY - position.y, (xMin + xMax) / 2 + cFramePrimaryX - position.x)
+        const cFrame = createFrame([x, y, z + height], [0, 0, cFramePrimaryθ], 0.01)
+        cFrame.userData.base2c = positionEulerToMatrix([0, 0, height], [0, 0, cFramePrimaryθ])
+        cFrame.name = 'c_frame'
+        bowl.add(cFrame)
+
+        bowl.userData.mesh = rim
+        bowl.userData.bounding_box = new THREE.Box3().setFromObject(mesh)
+
+        return bowl
+      }
+
+
+      function createFrame(position, orientation, axisLength = 0.05) {
+        const axes = [
+          { axis: 'x', color: 0xff0000 },
+          { axis: 'y', color: 0x00ff00 },
+          { axis: 'z', color: 0x0000ff }
+        ]
+        const frame = new THREE.Group()
+        axes.forEach(({ axis, color }) => {
+          const origin = new THREE.Vector3(0, 0, 0),
+            lineEnd = origin.clone()
+          lineEnd[axis] += axisLength
+          const axisObject = new THREE.LineSegments(
+            new THREE.BufferGeometry().setFromPoints([origin, lineEnd]),
+            new THREE.LineDashedMaterial({ color, dashSize: 1, gapSize: 1 })
+          )
+
+          orientation.forEach((angle, index) => {
+            axisObject.rotation[axes[index].axis] = angle
+          })
+
+          axisObject.position.add(new THREE.Vector3(...position))
+          frame.add(axisObject)
+        })
+        return frame
+      }
+
+
+      animate()
+    </script>
+  </body>
 </html>

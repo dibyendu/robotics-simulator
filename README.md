@@ -1,0 +1,1 @@
+Run the simulator with `python -m http.server 8080`, then open http://localhost:8080 in your browser.
