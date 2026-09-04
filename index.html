@@ -5,11 +5,10 @@
   <meta charset='UTF-8' />
   <meta http-equiv='X-UA-Compatible' content='ie=edge' />
   <meta name='viewport' content='width=device-width, initial-scale=1.0' />
-  <title>Motion Transfer Frame</title>
+  <title>Motion Simulation and Visualization</title>
   <link rel='preconnect' href='https://fonts.googleapis.com'>
   <link rel='preconnect' href='https://fonts.gstatic.com' crossorigin>
-  <link href='https://fonts.googleapis.com/css2?family=Roboto:ital,wght@0,100..900;1,100..900&display=swap'
-    rel='stylesheet'>
+  <link href='https://fonts.googleapis.com/css2?family=Roboto:ital,wght@0,100..900;1,100..900&display=swap' rel='stylesheet'>
   <style>
     * {
       margin: 0;
@@ -37,40 +36,34 @@
     const SHOW_HELPER = false
 
     const parameters = {
-      a: 0.05,
-      b: 0.05,
+      a: 0.06,
+      b: 0.03,
       n: 6,
-      height: 0.05,
+      height: 0.10,
       x: 0.72,
       y: 0.44
     }
 
     const xMin = 0.7200, xMax = 1.1,
-      yMin = -0.300, yMax = 0.755,
-      zMin = -0.06447185171756116
+          yMin = -0.300, yMax = 0.755,
+          zMin = -0.06447185171756116
 
-    const baseLink = { baxter: 'base', panda: 'panda_link0', unitree: 'torso_link' }
-    const endJoint = { baxter: 'left_gripper_base', panda: 'panda_hand_joint', unitree: 'left_base_joint' }
+    const baseLink = { baxter: 'base', panda: 'panda_link0' }
+    const endJoint = { baxter: 'left_hand', panda: 'panda_hand_joint' }
     const jointNames = {
       baxter: ['left_s0', 'left_s1', 'left_e0', 'left_e1', 'left_w0', 'left_w1', 'left_w2'],
-      panda: ['panda_joint1', 'panda_joint2', 'panda_joint3', 'panda_joint4', 'panda_joint5', 'panda_joint6', 'panda_joint7'],
-      unitree: ['left_shoulder_pitch_joint', 'left_shoulder_roll_joint', 'left_shoulder_yaw_joint', 'left_elbow_joint', 'left_wrist_roll_joint', 'left_wrist_pitch_joint', 'left_wrist_yaw_joint']
+      panda: ['panda_joint1', 'panda_joint2', 'panda_joint3', 'panda_joint4', 'panda_joint5', 'panda_joint6', 'panda_joint7']
     }
     const gripperAttributes = {
       baxter: {
         open: { l_gripper_l_finger_joint: 0.020833, l_gripper_r_finger_joint: -0.020833 },
         close: { l_gripper_l_finger_joint: 0, l_gripper_r_finger_joint: 0 },
-        ee2object: { position: [0.021, 0, 0.036], orientation: [0, -Math.PI / 2, 0] }
+        ee2object: { position: { demo: [0.006005, 0, -0.006291], task: [0.021, 0, 0.061] }, orientation: [0, -Math.PI / 2, 0] }
       },
       panda: {
         open: { panda_finger_joint1: 0.04, panda_finger_joint2: 0.04 },
         close: { panda_finger_joint1: 0, panda_finger_joint2: 0 },
-        ee2object: { position: [0.01, 0, 0.066], orientation: [0, -Math.PI / 2, 0] }
-      },
-      unitree: {
-        open: { left_index_1_joint: 0, left_index_2_joint: 0, left_thumb_1_joint: 0, left_thumb_2_joint: 0, left_thumb_3_joint: 0, left_thumb_4_joint: 0 },
-        close: { left_index_1_joint: 1.4381, left_index_2_joint: 3.14, left_thumb_1_joint: 1.1641, left_thumb_2_joint: 0.5864, left_thumb_3_joint: 0.5, left_thumb_4_joint: 3.14 },
-        ee2object: { position: [0.01, 0, 0.066], orientation: [0, -Math.PI / 2, 0] }
+        ee2object: { position: { demo: [0.01, 0, 0.066], task: [0.01, 0, 0.066] }, orientation: [0, -Math.PI / 2, 0] }
       }
     }
 
@@ -78,16 +71,15 @@
 
     const initialJointConfig = {
       baxter: [1.0434904, -0.22012624, -0.747048, 1.5243934, 1.8818109, -0.9687088, -0.49087385],
-      panda: [1.19829, 0.328408, 1.0627, -2.05579, -1.32419, 0.958354, 0.0122619],
-      unitree: [0, 0, 0, 0, 0, 0, 0]
+      panda: [1.19829, 0.328408, 1.0627, -2.05579, -1.32419, 0.958354, 0.0122619]
     }
 
     const demonstration = { region_of_interest: 1.5 }
 
     const isCylinder = false,
-      destinationObjectRadius = 0.04,
-      destinationObjectHeight = 0.08,
-      objectFrameGuidingPoses = []
+          destinationObjectRadius = 0.04,
+          destinationObjectHeight = 0.08,
+          objectFrameGuidingPoses = []
   </script>
   <script type='module'>
     import WasmModule from 'https://dibyendu.github.io/research/planner.mjs'
@@ -161,15 +153,15 @@
     //   SHARED VARIABLES   //
     //////////////////////////
     let robot = null,
-      ee2c = null,
-      world2ee = null,
-      ee2gripper = null,
-      plannedEEPoses = [],
-      plannedJointAngles = [],
-      playBackIntervalId = null,
-      cFrameGuidingPoses = [],
-      demonstrationSourceWorld2C,
-      demonstrationPassiveObjectBase2C
+        ee2c = null,
+        world2ee = null,
+        plannedEEPoses = [],
+        plannedJointAngles = [],
+        playBackIntervalId = null,
+        cFrameGuidingPoses = [],
+        demonstrationSourceWorld2C,
+        demonstrationPassiveObjectBase2C,
+        ee2gripper = { demo: null, task: null }
 
 
     function forwardKinematics(jointConfig, robotName) {
@@ -233,8 +225,10 @@
     //   CAMERA   //
     ////////////////
     const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 2000)
-    camera.position.set(-0.43738477943382703, -0.0016711043884659604, 0.4435157392168402)
-    camera.rotation.set(-0.003767840310239346, -0.7784348493584072, -1.5707963267948961)
+    scene.position.set(0.8, 0, -0.5)
+    scene.rotation.set(Math.PI, -Math.PI, 0)
+    camera.position.set(-0.47032294759910875, 0.0011589439523173595, 0.13735579030424844)
+    camera.rotation.set(-0.008437332335459433, -1.2866433657214633, -1.5707963267948961)
     camera.up.set(1, 0, 0)
 
 
@@ -350,108 +344,103 @@
       urdfLoader.packages = {
         baxter_description: 'https://cdn.jsdelivr.net/gh/irsl-sbu/baxter/baxter_description',
         rethink_ee_description: 'https://cdn.jsdelivr.net/gh/irsl-sbu/baxter/rethink_ee_description',
-        Panda: 'https://cdn.jsdelivr.net/gh/irsl-sbu/FrankaPanda/deps/Panda',
-        g1_description: 'https://cdn.jsdelivr.net/gh/irsl-sbu/unitree_ros/robots/g1_description'
+        Panda: 'https://cdn.jsdelivr.net/gh/irsl-sbu/FrankaPanda/deps/Panda'
       }
 
       let urdfPath
       switch (robotName) {
         case 'baxter':
-          // baxter.urdf
+          // baxter_with_electric_gripper.urdf    or    baxter.urdf
           urdfPath = urdfLoader.manager.resolveURL(`${urdfLoader.packages.baxter_description}/urdf/baxter_with_electric_gripper.urdf`)
           break
         case 'panda':
           urdfPath = urdfLoader.manager.resolveURL(`${urdfLoader.packages.Panda}/panda.urdf`)
-          break
-        case 'unitree':
-          // g1_23dof.urdf, g1_29dof.urdf
-          urdfPath = urdfLoader.manager.resolveURL(`${urdfLoader.packages.g1_description}/g1_29dof_rev_1_0_with_inspire_hand_FTP.urdf`)
-          break
       }
       urdfLoader.manager.itemStart(urdfPath)
       fetch(urdfPath)
-        .then(res => {
-          if (res.ok) return res.text()
-          else console.error(`Failed to load urdf '${urdfPath}' with error code ${res.status} : ${res.statusText}`)
-        })
-        .then(data => {
-          if (robot) {
-            robot.removeFromParent()
-            robot.geometry?.dispose()
-            robot.material?.dispose()
-          }
-          robot = urdfLoader.parse(data)
-          urdfLoader.manager.itemEnd(urdfPath)
-          robot.setJointValues(gripperAttributes[robotName].open)
-          robot.applyMatrix4(world2robot)
-          if (show)
-            scene.add(robot)
-          else
-            robot.removeFromParent()
-          console.log('Robot loaded')
+      .then(res => {
+        if (res.ok) return res.text()
+        else console.error(`Failed to load urdf '${urdfPath}' with error code ${res.status} : ${res.statusText}`)
+      })
+      .then(data => {
+        if (robot) {
+          robot.removeFromParent()
+          robot.geometry?.dispose()
+          robot.material?.dispose()
+        }
+        robot = urdfLoader.parse(data)
+        urdfLoader.manager.itemEnd(urdfPath)
+        robot.setJointValues(gripperAttributes[robotName].open)
+        robot.applyMatrix4(world2robot)
+        if (show)
+          scene.add(robot)
+        else
+          robot.removeFromParent()
+        console.log('Robot loaded')
 
-          const urdf = new DOMParser().parseFromString(data, 'application/xml')
-          if (urdf.querySelector('parsererror'))
-            console.error('Error while parsing URDF')
-          else {
-            function getJointValues(joint) {
-              const fields = { joint: { name: null, type: null }, parent: { link: null }, child: { link: null }, origin: { rpy: null, xyz: null }, axis: { xyz: null }, limit: { lower: null, upper: null } }
-              fields.joint.name = joint.getAttribute('name')
-              fields.joint.type = joint.getAttribute('type')
-              joint.childNodes.forEach(node => {
-                if (node.tagName in fields) {
-                  Object.keys(fields[node.tagName]).forEach(value => {
-                    fields[node.tagName][value] = node.getAttribute(value)
-                  })
-                }
-              })
-              return fields
-            }
-
-            const linkMap = {}
-            Array.from(urdf.getElementsByTagName('joint')).forEach(joint => {
-              const fields = getJointValues(joint)
-              if (!(fields.child.link in linkMap))
-                linkMap[fields.child.link] = []
-              linkMap[fields.child.link].push(fields)
+        const urdf = new DOMParser().parseFromString(data, 'application/xml')
+        if (urdf.querySelector('parsererror'))
+          console.error('Error while parsing URDF')
+        else {
+          function getJointValues(joint) {
+            const fields = { joint: { name: null, type: null }, parent: { link: null }, child: { link: null }, origin: { rpy: null, xyz: null }, axis: { xyz: null }, limit: { lower: null, upper: null } }
+            fields.joint.name = joint.getAttribute('name')
+            fields.joint.type = joint.getAttribute('type')
+            joint.childNodes.forEach(node => {
+              if (node.tagName in fields) {
+                Object.keys(fields[node.tagName]).forEach(value => {
+                  fields[node.tagName][value] = node.getAttribute(value)
+                })
+              }
             })
+            return fields
+          }
 
-            const path = [Array.from(urdf.getElementsByName(endJoint[robotName])).filter(tag => tag.tagName === 'joint').map(joint => getJointValues(joint))[0]]
-            while (path.at(-1).parent.link !== baseLink[robotName])
-              path.push(linkMap[path.at(-1).parent.link][0])
+          const linkMap = {}
+          Array.from(urdf.getElementsByTagName('joint')).forEach(joint => {
+            const fields = getJointValues(joint)
+            if (!(fields.child.link in linkMap))
+              linkMap[fields.child.link] = []
+            linkMap[fields.child.link].push(fields)
+          })
 
-            const matrix = new THREE.Matrix4().identity()
-            const manipulatorConfig = {}
-            for (const joint of path.reverse()) {
-              const rpy = joint.origin.rpy.split(' ').map(val => parseFloat(val)),
-                xyz = joint.origin.xyz.split(' ').map(val => parseFloat(val)),
-                rotX = new THREE.Matrix4().makeRotationX(rpy[0]),
-                rotY = new THREE.Matrix4().makeRotationY(rpy[1]),
-                rotZ = new THREE.Matrix4().makeRotationZ(rpy[2]),
-                rotation = new THREE.Matrix3().setFromMatrix4(matrix.multiply(rotZ.multiply(rotY).multiply(rotX).setPosition(...xyz)))
-              if (joint.axis.xyz) {
-                const axis = new THREE.Vector3(...joint.axis.xyz.split(' ').map(val => parseFloat(val))).applyMatrix3(rotation)
-                manipulatorConfig[joint.joint.name] = {
-                  axis: [axis.x, axis.y, axis.z],
-                  q: matrix.toArray().slice(12).slice(0, 3),
-                  limits: { lower: parseFloat(joint.limit.lower), upper: parseFloat(joint.limit.upper) }
-                }
+          const path = [getJointValues(urdf.querySelector(`joint[name="${endJoint[robotName]}"]`))]
+          while (path.at(-1).parent.link !== baseLink[robotName])
+            path.push(linkMap[path.at(-1).parent.link][0])
+
+          const matrix = new THREE.Matrix4().identity()
+          const manipulatorConfig = {}
+          for (const joint of path.reverse()) {
+            const rpy = joint.origin.rpy.split(' ').map(val => parseFloat(val)),
+              xyz = joint.origin.xyz.split(' ').map(val => parseFloat(val)),
+              rotX = new THREE.Matrix4().makeRotationX(rpy[0]),
+              rotY = new THREE.Matrix4().makeRotationY(rpy[1]),
+              rotZ = new THREE.Matrix4().makeRotationZ(rpy[2]),
+              rotation = new THREE.Matrix3().setFromMatrix4(matrix.multiply(rotZ.multiply(rotY).multiply(rotX).setPosition(...xyz)))
+            if (joint.axis.xyz) {
+              const axis = new THREE.Vector3(...joint.axis.xyz.split(' ').map(val => parseFloat(val))).applyMatrix3(rotation)
+              manipulatorConfig[joint.joint.name] = {
+                axis: [axis.x, axis.y, axis.z],
+                q: matrix.toArray().slice(12).slice(0, 3),
+                limits: { lower: parseFloat(joint.limit.lower), upper: parseFloat(joint.limit.upper) }
               }
             }
-
-            ee2gripper = positionEulerToMatrix(gripperAttributes[robotName].ee2object.position, gripperAttributes[robotName].ee2object.orientation)
-
-            robotConfiguration.gst0 = nj.array(matrix.transpose().toArray()).reshape(4, 4).tolist().map(row => row.map(n => `${n.toFixed(16)}`).join(',')).join('\n')
-            robotConfiguration.joint_axes = nj.array(jointNames[robotName].map(name => manipulatorConfig[name].axis)).T.tolist().map(row => row.map(n => `${n.toFixed(16)}`).join(',')).join('\n')
-            robotConfiguration.joint_q = nj.array(jointNames[robotName].map(name => manipulatorConfig[name].q)).T.tolist().map(row => row.map(n => `${n.toFixed(16)}`).join(',')).join('\n')
-            robotConfiguration.joint_limits = nj.array(jointNames[robotName].map(name => [manipulatorConfig[name].limits.lower, manipulatorConfig[name].limits.upper])).tolist().map(row => row.map(n => `${n.toFixed(16)}`).join(',')).join('\n')
           }
-        })
-        .catch(e => {
-          console.error('URDFLoader: Error loading file', e)
-          urdfLoader.manager.itemError(urdfPath)
-          urdfLoader.manager.itemEnd(urdfPath)
-        })
+
+          ee2gripper.demo = positionEulerToMatrix(gripperAttributes[robotName].ee2object.position.demo, gripperAttributes[robotName].ee2object.orientation)
+          ee2gripper.task = positionEulerToMatrix(gripperAttributes[robotName].ee2object.position.task, gripperAttributes[robotName].ee2object.orientation)
+
+          robotConfiguration.gst0 = nj.array(matrix.transpose().toArray()).reshape(4, 4).tolist().map(row => row.map(n => `${n.toFixed(16)}`).join(',')).join('\n')
+          robotConfiguration.joint_axes = nj.array(jointNames[robotName].map(name => manipulatorConfig[name].axis)).T.tolist().map(row => row.map(n => `${n.toFixed(16)}`).join(',')).join('\n')
+          robotConfiguration.joint_q = nj.array(jointNames[robotName].map(name => manipulatorConfig[name].q)).T.tolist().map(row => row.map(n => `${n.toFixed(16)}`).join(',')).join('\n')
+          robotConfiguration.joint_limits = nj.array(jointNames[robotName].map(name => [manipulatorConfig[name].limits.lower, manipulatorConfig[name].limits.upper])).tolist().map(row => row.map(n => `${n.toFixed(16)}`).join(',')).join('\n')
+        }
+      })
+      .catch(e => {
+        console.error('Error loading URDF file: ', e)
+        urdfLoader.manager.itemError(urdfPath)
+        urdfLoader.manager.itemEnd(urdfPath)
+      })
     }
 
 
@@ -462,11 +451,11 @@
 
     let props = gui.addFolder('Primary Object: Super-Elliptical Cylinder')
 
-    props.add(parameters, 'a', 0.01, 0.1).name('a').step(0.01).onChange(value => {
+    props.add(parameters, 'a', 0.01, 0.1).name('a').step(0.005).onChange(value => {
       updatePrimaryObject({ ...parameters, a: value })
       updatePassiveObject({ radius: destinationObjectRadius, height: destinationObjectHeight, position: { x: parameters.x, y: parameters.y, z: zMin }, isCylinder })
     })
-    props.add(parameters, 'b', 0.01, 0.1).name('b').step(0.01).onChange(value => {
+    props.add(parameters, 'b', 0.01, 0.1).name('b').step(0.005).onChange(value => {
       updatePrimaryObject({ ...parameters, b: value })
       updatePassiveObject({ radius: destinationObjectRadius, height: destinationObjectHeight, position: { x: parameters.x, y: parameters.y, z: zMin }, isCylinder })
     })
@@ -497,14 +486,14 @@
 
     props.close()
 
-    parameters.showrobot = false
+    parameters.showrobot = true
     gui.add(parameters, 'showrobot').name('Show Robot').onChange(value => value ? scene.add(robot) : robot.removeFromParent())
 
     parameters.robot = 'baxter'
     loadRobot(parameters.robot, parameters.showrobot)
-    gui.add(parameters, 'robot', ['baxter', 'panda', 'unitree']).name('Choose Robot').onChange(value => loadRobot(value, parameters.showrobot))
+    gui.add(parameters, 'robot', ['baxter', 'panda']).name('Choose Robot').onChange(value => loadRobot(value, parameters.showrobot))
 
-    parameters.camera = 'head'
+    parameters.camera = 'front'
     gui.add(parameters, 'camera', ['top', 'head', 'front']).name('Reset Camera').onChange(value => {
       orbitControls.reset()
       scene.position.set(0, 0, 0)
@@ -561,7 +550,7 @@
       }
 
 
-      let robot2ee = world2object.clone().multiply(positionEulerToMatrix([-parameters.a - offset, 0, 0], [0, 0, 0])).multiply(ee2gripper.clone().invert()).invert().multiply(world2robot).invert()
+      let robot2ee = world2object.clone().multiply(positionEulerToMatrix([-parameters.a - offset, 0, 0], [0, 0, 0])).multiply(ee2gripper.task.clone().invert()).invert().multiply(world2robot).invert()
       const { joint_angles: approachJointAngles } = moveEE(initialJointConfig[parameters.robot], robot2ee)
 
 
@@ -575,7 +564,7 @@
       }
 
 
-      robot2ee = world2object.clone().multiply(positionEulerToMatrix([-parameters.a, 0, 0], [0, 0, 0])).multiply(ee2gripper.clone().invert()).invert().multiply(world2robot).invert()
+      robot2ee = world2object.clone().multiply(positionEulerToMatrix([-parameters.a, 0, 0], [0, 0, 0])).multiply(ee2gripper.task.clone().invert()).invert().multiply(world2robot).invert()
       const { joint_angles: translationJointAngles } = moveEE(approachJointAngles.at(-1), robot2ee)
 
 
@@ -597,7 +586,7 @@
           robot.setJointValues(Object.assign({}, ...jointNames[parameters.robot].map((name, index) => ({ [name]: retrievalJointAngles[poseIndex - approachJointAngles.length - openingSequence.length - translationJointAngles.length][index] }))))
           const matrix = new THREE.Matrix4()
           matrix.fromArray(retrievalEEPoses[poseIndex - approachJointAngles.length - openingSequence.length - translationJointAngles.length])
-          const objectPose = matrix.clone().multiply(ee2gripper).multiply(positionEulerToMatrix([parameters.a, 0, 0], [0, 0, 0])).premultiply(world2robot)
+          const objectPose = matrix.clone().multiply(ee2gripper.task).multiply(positionEulerToMatrix([parameters.a, 0, 0], [0, 0, 0])).premultiply(world2robot)
           const { position: objectPosition, orientation: objectOrientation } = matrixToPositionEuler(objectPose)
           primaryObject.position.copy(new THREE.Vector3(...objectPosition))
           primaryObject.rotation.copy(new THREE.Euler(...objectOrientation))
@@ -618,7 +607,7 @@
       world2ee.fromArray(forwardKinematics(initialJointConfig[parameters.robot], parameters.robot).T.flatten().tolist())
       world2ee.premultiply(world2robot)
 
-      const ee2object = ee2gripper.clone().multiply(positionEulerToMatrix([parameters.a, 0, 0], [0, 0, 0])),
+      const ee2object = ee2gripper.task.clone().multiply(positionEulerToMatrix([parameters.a, 0, 0], [0, 0, 0])),
         objectPose = matrixToPositionEuler(world2robot.clone().invert().multiply(world2ee).multiply(ee2object))
 
       updatePrimaryObject({ a: parameters.a, b: parameters.b, n: parameters.n, height: parameters.height, position: objectPose.position, orientation: objectPose.orientation })
@@ -633,7 +622,7 @@
       // demonstration C-Frame to C-Frame (primary w.r.t. passive) guiding pose computation
       const demonstrationGeometry = JSON.parse(demonstration.geometry),
         [demo_x, demo_y, demo_z] = demonstration.object_poses.split('\n').map(line => line.trim()).filter(line => line.length).slice(0, 3).map(row => parseFloat(row.split(',').at(-1))),
-        { position: [object_x, object_y, object_z] } = matrixToPositionEuler(world2ee.clone().multiply(ee2gripper).multiply(positionEulerToMatrix([demonstrationGeometry.source.a, 0, 0], [0, 0, 0]))),
+        { position: [object_x, object_y, object_z] } = matrixToPositionEuler(world2ee.clone().multiply(ee2gripper.demo).multiply(positionEulerToMatrix([demonstrationGeometry.source.a, 0, 0], [0, 0, 0]))),
         { position: cFramePosition, orientation: cFrameOrientation } = computePrimaryObjectCFrame(
           { x: demo_x - object_x - (xMin + xMax) / 2, y: demo_y - object_y - (yMin + yMax) / 2, z: demo_z - object_z - zMin },
           demonstrationGeometry.source.a,
