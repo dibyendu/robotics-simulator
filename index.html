@@ -29,9 +29,9 @@
       {
         "imports": {
           "numjs": "https://esm.run/numjs@0.16.0",
-          "three": "https://esm.run/three@0.182.0",
-          "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.182.0/examples/jsm/",
-          "three/examples/jsm/": "https://cdn.jsdelivr.net/npm/three@0.182.0/examples/jsm/",
+          "three": "https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.webgpu.js",
+          "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.0/examples/jsm/",
+          "three/examples/jsm/": "https://cdn.jsdelivr.net/npm/three@0.186.0/examples/jsm/",
           "urdf-loader": "https://cdn.jsdelivr.net/npm/urdf-loader@0.12.6/src/URDFLoader.js"
         }
       }
@@ -215,7 +215,8 @@
       //////////////////
       //   RENDERER   //
       //////////////////
-      const renderer = new THREE.WebGLRenderer({ antialias: true })
+      // Uses WebGPU when available, otherwise falls back to a WebGL2 backend automatically
+      const renderer = new THREE.WebGPURenderer({ antialias: true })
       renderer.setSize(window.innerWidth, window.innerHeight)
       renderer.setPixelRatio(window.devicePixelRatio)
       renderer.autoClear = false
@@ -247,9 +248,10 @@
 
 
       ///////////////
-      //   CLOCK   //
+      //   TIMER   //
       ///////////////
-      const clock = new THREE.Clock()
+      const timer = new THREE.Timer()
+      timer.connect(document)
 
 
       /////////////////////////
@@ -1022,11 +1024,11 @@
 
 
 
-      function animate() {
+      function animate(timestamp) {
         stats.begin()
-        requestAnimationFrame(animate)
+        timer.update(timestamp)
         if (helper.animating)
-          helper.update(clock.getDelta())
+          helper.update(timer.getDelta())
         renderer.clear()
         orbitControls.update()
         renderer.render(scene, camera)
@@ -1264,10 +1266,6 @@
         rim.position.copy(new THREE.Vector3(...[x, y, z + height]))
         bowl.add(rim)
 
-        const light = new THREE.PointLight(0x000000, 1)
-        light.position.set(x, y, height / 2)
-        bowl.add(light)
-
         const cFramePrimaryθ = Math.atan2((yMin + yMax) / 2 + cFramePrimaryY - position.y, (xMin + xMax) / 2 + cFramePrimaryX - position.x)
         const cFrame = createFrame([x, y, z + height], [0, 0, cFramePrimaryθ], 0.01)
         cFrame.userData.base2c = positionEulerToMatrix([0, 0, height], [0, 0, cFramePrimaryθ])
@@ -1296,6 +1294,7 @@
             new THREE.BufferGeometry().setFromPoints([origin, lineEnd]),
             new THREE.LineDashedMaterial({ color, dashSize: 1, gapSize: 1 })
           )
+          axisObject.computeLineDistances()
 
           orientation.forEach((angle, index) => {
             axisObject.rotation[axes[index].axis] = angle
@@ -1307,8 +1306,10 @@
         return frame
       }
 
-
-      animate()
+      renderer.setAnimationLoop(animate).catch(error => {
+        console.error('Failed to initialize WebGPU/WebGL renderer: ', error)
+        alert('This browser supports neither WebGPU nor WebGL, so the simulator cannot render.')
+      })
     </script>
   </body>
 </html>
